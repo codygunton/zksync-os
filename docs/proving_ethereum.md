@@ -15,14 +15,29 @@ You can run the prover either on GPU (faster) or on CPU.
 TL;DR:
 
 (from this repo's main directory)
+
 ```shell
-
 mkdir /tmp/witness
+cd tests/instances/eth_runner
 
-cargo run -p eth_runner --release --features rig/no_print,evm_replay -- single-run --block-dir tests/instances/eth_runner/blocks/19299001 --randomized --witness-output-dir /tmp/witness
+cargo run --release --features rig/no_print,rig/unlimited_native -- single-run --block-dir blocks/19299001 --randomized --witness-output-dir /tmp/witness
 ```
 
-Now, clone [zksync-airbender](https://github.com/matter-labs/zksync-airbender/tree/main) (suggested version v0.3.0).
+Now, clone [zksync-airbender](https://github.com/matter-labs/zksync-airbender/tree/main) (suggested version v0.4.3).
+
+```shell
+git clone https://github.com/matter-labs/zksync-airbender
+cd zksync-airbender
+git checkout v0.4.3
+
+# Pin to compatible Rust nightly (airbender's floating "nightly" may pick up broken versions)
+echo '[toolchain]
+channel = "nightly-2025-05-23"' > rust-toolchain.toml
+
+# Downgrade zerocopy to avoid SIMD feature conflicts
+cargo update -p zerocopy --precise 0.8.28
+```
+
 From Airbender's [tools/cli directory](https://github.com/matter-labs/zksync-airbender/tree/main/tools/cli) run the prover with GPU or CPU as follows:
 
 ### With GPU (requires at least 22GB of device RAM):
@@ -57,4 +72,8 @@ The command above takes the block information from `tests/instances/eth_runner`
 
 We've put some additional blocks in https://github.com/antoniolocascio/ethereum-block-examples/tree/main/blocks.
 
-Alternatively, you can download them using the `live-run` command from eth_runner.
+Alternatively, you can download them using the `live-run` command from eth_runner:
+```shell
+cd tests/instances/eth_runner
+RUST_LOG=eth_runner=info cargo run --release --features rig/no_print,rig/unlimited_native -- live-run --start-block 19299000 --end-block 19299005 --endpoint YOUR_RPC_ENDPOINT --db ./db
+```
