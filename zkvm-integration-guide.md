@@ -152,28 +152,6 @@ Integration points in Airbender to model
   - execution_utils/src/verifiers.rs:44-148 — assembles oracle data from proof metadata
   - verifier_common/src/proof_flattener.rs — flattens proofs/queries into u32 sequences
 
-### Query Dependencies
-
-While not strictly enforced, the expected query order is:
-1. `ZK_PROOF_DATA_INIT` - Called once at startup
-2. `INITIAL_STATE_COMMITMENT` - Called once after init
-3. For each transaction:
-   - `NEXT_TX_SIZE`
-   - `TX_DATA_WORDS` (possibly multiple calls)
-   - `TX_ENCODING_FORMAT`
-   - Various storage/preimage queries during execution
-4. `DISCONNECT_ORACLE` - Called when transitioning to autonomous mode
-
-### DISCONNECT_ORACLE Behavior
-
-After `DISCONNECT_ORACLE` (0x40000000) is processed:
-- The oracle enters "disconnected" state
-- Subsequent CSR writes are silently ignored
-- Subsequent CSR reads return `0`
-- The oracle cannot reconnect; this is a one-way transition
-- zksync-os continues execution in "autonomous mode" (no more oracle queries)
-
-### Query Types
 
 To sanity check the types of instructions that must be supported we can run:
 ```
@@ -181,7 +159,7 @@ grep ".insn" evm_replay.dump | grep ":        7c" | cut -d , -f2 | sort  -u > cs
 ```
 which produces a list of ~40 instructions. The script decode_csr.py analyzses these. The broad families seen are `csrrw zero ORACLE_IO *`, `csrrw * ORACLE_IO zero`, `csrrw zero BLAKE2_DELEG zero` and `csrrw zero BIGINT_DELET zero`.
 
-I/O queries
+I/O and control queries
 
 | Query ID     | Name                         | Input         | Output                         | Handler Reference |
 |--------------|------------------------------|---------------|--------------------------------|-------------------|
@@ -208,28 +186,24 @@ Optional debug query
 | `0xFFFFFFFF` | `UART` | Debug output (write-only) | [`forward_system/src/run/query_processors/uart_print.rs`](forward_system/src/run/query_processors/uart_print.rs) |
 
 
-All data through the oracle uses **usize serialization** (32-bit words, little-endian). See [`zk_ee/src/oracle/usize_serialization/mod.rs`](zk_ee/src/oracle/usize_serialization/mod.rs) for the `UsizeSerializable` and `UsizeDeserializable` traits:
+All data through the oracle uses **usize serialization** (32-bit words, little-endian). See [`zk_ee/src/oracle/usize_serialization/mod.rs`](zk_ee/src/oracle/usize_serialization/mod.rs) for the `UsizeSerializable` and `UsizeDeserializable` traits.
 
-```rust
-// 20-byte address serialized as 5 x u32
-address[0..4]   → word 0
-address[4..8]   → word 1
-address[8..12]  → word 2
-address[12..16] → word 3
-address[16..20] → word 4
+## 4. Exit detection
+Success: guest calls `zksync_os_finish_success(&[u32; 8])` which enters an infinite loop with output in registers x10-x17. Reference: [`riscv_common/src/lib.rs:54`](https://github.com/matter-labs/zksync-airbender/blob/main/riscv_common/src/lib.rs#L54)
 
-// 32-byte hash serialized as 8 x u32
-hash[0..4]   → word 0
-hash[4..8]   → word 1
-...
-hash[28..32] → word 7
-
-// u64 value serialized as 2 x u32
-value & 0xFFFFFFFF       → word 0 (low)
-(value >> 32) & 0xFFFFFF → word 1 (high)
+```
+Detection:
+1. PC unchanged for N cycles AND last instruction is branch-to-self
+2. Read x10-x17 as 256-bit output (x10 = low, x17 = high)
 ```
 
----
+Error: guest writes to CSR 0xc00 (cycle), triggering unsatisfiable proof. Reference: [`riscv_common/src/lib.rs:37`](https://github.com/matter-labs/zksync-airbender/blob/main/riscv_common/src/lib.rs#L37)
+
+```
+Detection:
+1. Intercept csrrw to CSR 0xc00
+2. Abort execution, mark proof as failed
+```
 
 # Plan to implement for ZisK
 
