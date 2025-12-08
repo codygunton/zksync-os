@@ -175,6 +175,50 @@ After `DISCONNECT_ORACLE` (0x40000000) is processed:
 
 ### Query Types
 
+grep ".insn" evm_replay.dump | grep ":        7c" | cut -d , -f2 | sort  -u > csr_insns produces 
+
+ 0x7c0010f3
+ 0x7c0012f3
+ 0x7c001373
+ 0x7c0013f3
+ 0x7c0014f3
+ 0x7c001573
+ 0x7c0015f3
+ 0x7c001673
+ 0x7c0016f3
+ 0x7c001773
+ 0x7c0017f3
+ 0x7c001873
+ 0x7c0018f3
+ 0x7c001973
+ 0x7c0019f3
+ 0x7c001a73
+ 0x7c001af3
+ 0x7c001b73
+ 0x7c001bf3
+ 0x7c001c73
+ 0x7c001cf3
+ 0x7c001d73
+ 0x7c001df3
+ 0x7c001e73
+ 0x7c001ef3
+ 0x7c001f73
+ 0x7c001ff3
+ 0x7c049073
+ 0x7c051073
+ 0x7c059073
+ 0x7c061073
+ 0x7c069073
+ 0x7c071073
+ 0x7c079073
+ 0x7c081073
+ 0x7c091073
+ 0x7c0a1073
+ 0x7c0a9073
+ 0x7c0d9073
+ 0x7c701073
+ 0x7ca01073
+
 Your oracle must handle these query types (minimum viable set). The "Handler Reference" column points to existing zksync-os implementations that ZKVMs can reuse directly—these are not Airbender-specific and handle the query logic independently of the proving system.
 
 #### Critical Queries (Required)
