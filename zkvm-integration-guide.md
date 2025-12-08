@@ -175,53 +175,13 @@ After `DISCONNECT_ORACLE` (0x40000000) is processed:
 
 ### Query Types
 
-grep ".insn" evm_replay.dump | grep ":        7c" | cut -d , -f2 | sort  -u > csr_insns produces 
+To sanity check the types of instructions that must be supported we can run:
+```
+grep ".insn" evm_replay.dump | grep ":        7c" | cut -d , -f2 | sort  -u > csr_insns
+```
+which produces a list of ~40 instructions. The script decode_csr.py analyzses these. The broad families seen are `csrrw zero ORACLE_IO *`, `csrrw * ORACLE_IO zero`, `csrrw zero BLAKE2_DELEG zero` and `csrrw zero BIGINT_DELET zero`.
 
- 0x7c0010f3
- 0x7c0012f3
- 0x7c001373
- 0x7c0013f3
- 0x7c0014f3
- 0x7c001573
- 0x7c0015f3
- 0x7c001673
- 0x7c0016f3
- 0x7c001773
- 0x7c0017f3
- 0x7c001873
- 0x7c0018f3
- 0x7c001973
- 0x7c0019f3
- 0x7c001a73
- 0x7c001af3
- 0x7c001b73
- 0x7c001bf3
- 0x7c001c73
- 0x7c001cf3
- 0x7c001d73
- 0x7c001df3
- 0x7c001e73
- 0x7c001ef3
- 0x7c001f73
- 0x7c001ff3
- 0x7c049073
- 0x7c051073
- 0x7c059073
- 0x7c061073
- 0x7c069073
- 0x7c071073
- 0x7c079073
- 0x7c081073
- 0x7c091073
- 0x7c0a1073
- 0x7c0a9073
- 0x7c0d9073
- 0x7c701073
- 0x7ca01073
-
-Your oracle must handle these query types (minimum viable set). The "Handler Reference" column points to existing zksync-os implementations that ZKVMs can reuse directly—these are not Airbender-specific and handle the query logic independently of the proving system.
-
-#### Critical Queries (Required)
+I/O queries
 
 | Query ID     | Name                         | Input         | Output                         | Handler Reference |
 |--------------|------------------------------|---------------|--------------------------------|-------------------|
@@ -235,78 +195,20 @@ Your oracle must handle these query types (minimum viable set). The "Handler Ref
 | `0x40020000` | `GENERIC_PREIMAGE`           | hash          | Preimage data                  | [`forward_system/src/run/query_processors/generic_preimage.rs`](forward_system/src/run/query_processors/generic_preimage.rs) |
 | `0x40000000` | `DISCONNECT_ORACLE`          | None          | Empty (switches to autonomous) | [`oracle_provider/src/lib.rs:94`](oracle_provider/src/lib.rs) |
 
-#### Advice Queries (For Precompiles)
 
+Advice queries
 | Query ID     | Name                        | Purpose                       | Handler Reference                                                                                    |
 |--------------|-----------------------------|-------------------------------|------------------------------------------------------------------------------------------------------|
 | `0x40050010` | `MODEXP_ADVICE`             | Modular exponentiation result | [`callable_oracles/src/arithmetic/mod.rs`](callable_oracles/src/arithmetic/mod.rs)                   |
 | `0x40050020` | `BLOB_COMMITMENT_AND_PROOF` | KZG commitment verification   | [`callable_oracles/src/blob_kzg_commitment/mod.rs`](callable_oracles/src/blob_kzg_commitment/mod.rs) |
 
-#### Debug (Optional)
-
+Optional debug query
 | Query ID     | Name   | Purpose                   | Handler Reference |
 |--------------|--------|---------------------------|-------------------|
 | `0xFFFFFFFF` | `UART` | Debug output (write-only) | [`forward_system/src/run/query_processors/uart_print.rs`](forward_system/src/run/query_processors/uart_print.rs) |
 
-#### ZK_PROOF_DATA_INIT Response Format
 
-The exact word layout for `ZK_PROOF_DATA_INIT` (0x40070001) response:
-
-```
-Word 0-1:   batch_number (u64, little-endian)
-Word 2-3:   timestamp (u64, little-endian)
-Word 4-5:   l1_gas_price (u64, little-endian)
-Word 6-7:   fair_l2_gas_price (u64, little-endian)
-Word 8-15:  base_system_contract_hash_0 (32 bytes as 8 × u32)
-Word 16-23: base_system_contract_hash_1 (32 bytes as 8 × u32)
-Word 24:    num_transactions (u32)
-```
-
-#### TX_ENCODING_FORMAT Values
-
-Known encoding format IDs:
-- `0` - Legacy transaction format
-- `1` - EIP-2930 (access list)
-- `2` - EIP-1559 (fee market)
-- `113` (0x71) - EIP-712 (zkSync native)
-
-The format ID determines how `TX_DATA_WORDS` content should be interpreted.
-
----
-
-## 4. Exit/Completion Detection
-
-**Success**: Guest enters infinite loop with output in registers x10-x17
-
-```
-Detection algorithm:
-1. Track instruction pointer (PC)
-2. If PC hasn't changed for N cycles AND last instruction was a branch to self
-3. Read x10-x17 as the 256-bit public output
-```
-
-**Output register mapping**:
-```
-x10 = output[0]  (least significant)
-x11 = output[1]
-x12 = output[2]
-x13 = output[3]
-x14 = output[4]
-x15 = output[5]
-x16 = output[6]
-x17 = output[7]  (most significant)
-```
-
-**Error**: Write to CSR `cycle` (0xC00)
-```
-If CSR write to address 0xC00 detected → abort with error
-```
-
----
-
-## 5. Data Serialization Format
-
-All data through the oracle uses **usize serialization** (32-bit words, little-endian):
+All data through the oracle uses **usize serialization** (32-bit words, little-endian). See [`zk_ee/src/oracle/usize_serialization/mod.rs`](zk_ee/src/oracle/usize_serialization/mod.rs) for the `UsizeSerializable` and `UsizeDeserializable` traits:
 
 ```rust
 // 20-byte address serialized as 5 x u32
@@ -329,25 +231,17 @@ value & 0xFFFFFFFF       → word 0 (low)
 
 ---
 
-## 8. Testing recommendations
+# Plan to implement for ZisK
 
-**Phase 1: Basic Execution**
-1. Load zksync_os.bin, run until first host-guest communication
-2. Verify your interface is being accessed (CSR 0x7c0 if using Airbender's approach)
-3. Return dummy data to see if execution progresses
+0. Learn how to execute ZisK on a single GPU.
 
-**Phase 2: Query Protocol**
-1. Log all oracle reads/writes
-2. Verify query_type, input_len, input pattern
-3. Implement `DISCONNECT_ORACLE` (return empty) to test autonomous mode
+1. Check ZisK memory map, set linker scripts, compile Airbender for RV64IM(Zicsr?) and validate valid memory mapping.
 
-**Phase 3: Simple Transaction**
-1. Prepare minimal batch (single transfer tx)
-2. Implement `ZK_PROOF_DATA_INIT`, `NEXT_TX_SIZE`, `TX_DATA_WORDS`
-3. Run full execution, capture x10-x17 output
+2. Implement needed CSRRW instruction with stubbing.
 
-**Phase 4: Full Integration**
-1. Implement remaining query types
-2. Run against mainnet/testnet blocks
-3. Compare output hashes with reference implementation
+3. Build CLI; execute a block with stubbing.
+
+4. Implement oracles.
+
+5. ... unknown unknowns
 
