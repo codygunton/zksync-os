@@ -97,7 +97,7 @@ Here is the default layout supported by Airbender:
 
 ## 2. Extend ISA
 
-To follow the existing pattern, your ZKVM must support RV32IM plus `csrrw` instructions for host-guest communication. No other privileged instrution is needed 
+To follow the existing pattern, your ZKVM must support RV32IM plus `csrrw` instructions for host-guest communication. No other instruction from the privileged architecture is needed.
 
 Aside from its dependency on Airbenders riscv_common crate, ZKsyncOS uses the `csrrw` instruction in exactly the following places, none of which is essential:
   1. cycle_marker/src/lib.rs (2 uses of 0x7ff)
@@ -114,32 +114,14 @@ Aside from its dependency on Airbenders riscv_common crate, ZKsyncOS uses the `c
 
   3. supporting_crates/delegated_u256/src/delegation.rs (1 use of 0x7ca)
   Purpose: Delegate U256 bigint operations to a specialized prover circuit for efficiency
-  - The NonDeterminismCSRSourceImplementation trait abstracts this. However the basi_system  
 
 Airbender's CSR-based approach uses `csrrw` for:
 - IO oracle queries (storage, tx data, preimages)
 - Non-determinism hints for witness construction 
 - Delegations (precompiles offloaded to specialized circuits). Note that the use of delegations is gates behind `--features proving`.
 
-The CSRs used by Airbender are:
-| CSR             | Address | Purpose                                         |
-|-----------------|---------|-------------------------------------------------|
-| Custom (oracle) | `0x7ci` | Host-guest communication for oracle queries     |
-| Cycle           | `0xc00` | Write triggers error exit (unsatisfiable proof) |
-
-See Airbender's CSR handling:
-- [`riscv_common/src/lib.rs:5-24`](../zksync-airbender/riscv_common/src/lib.rs) — `csr_write_word` and `csr_read_word` implementations
-- [`risc_v_simulator/src/cycle/state.rs:26`](../zksync-airbender/risc_v_simulator/src/cycle/state.rs) — `NON_DETERMINISM_CSR = 0x7c0`
-- [`cs/src/devices/risc_v_types.rs:91`](../zksync-airbender/cs/src/devices/risc_v_types.rs) — CSR enum mapping
-
-
-
----
-
-
-## 3. Oracle Query Protocol
-
-This is the **most critical interface** to implement.
+## 3. 
+The oracle query protocol is responsible for fetching external data that the guest program cannot compute on its own—transaction inputs, storage values, preimages, and computational advice. The guest writes a query to the host, the host processes it and prepares a response, then the guest reads the result back via CSR. References in ZKsyncOS: guest side (makes queries): [`proof_running_system/src/io_oracle/mod.rs`](proof_running_system/src/io_oracle/mod.rs) — `CsrBasedIOOracle`; host side (dispatches queries): [`oracle_provider/src/lib.rs`](oracle_provider/src/lib.rs) — `ZkEENonDeterminismSource`; query ID definitions [`zk_ee/src/oracle/query_ids.rs`](zk_ee/src/oracle/query_ids.rs). In summary:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -156,52 +138,99 @@ This is the **most critical interface** to implement.
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**State machine**:
+Integration points in Airbender to model
+  1. CSR interception (bridging to oracle):
+  - risc_v_simulator/src/cycle/state.rs:1171-1301 — intercepts CSR 0x7c0 reads/writes
+  - Calls non_determinism_source.read() and write_with_memory_access()
+
+  2. Oracle data wiring:
+  - risc_v_simulator/src/abstractions/non_determinism.rs:27-48 — QuasiUARTSource holds oracle data as VecDeque<u32>
+  - tools/cli/src/prover_utils.rs:275-279 — populates the oracle with batch data
+
+  3. External data sources:
+  - tools/cli/src/main.rs:192-218 — fetches from RPC (anvil_zks_getBoojumWitness)
+  - execution_utils/src/verifiers.rs:44-148 — assembles oracle data from proof metadata
+  - verifier_common/src/proof_flattener.rs — flattens proofs/queries into u32 sequences
+
+### Query Dependencies
+
+While not strictly enforced, the expected query order is:
+1. `ZK_PROOF_DATA_INIT` - Called once at startup
+2. `INITIAL_STATE_COMMITMENT` - Called once after init
+3. For each transaction:
+   - `NEXT_TX_SIZE`
+   - `TX_DATA_WORDS` (possibly multiple calls)
+   - `TX_ENCODING_FORMAT`
+   - Various storage/preimage queries during execution
+4. `DISCONNECT_ORACLE` - Called when transitioning to autonomous mode
+
+### DISCONNECT_ORACLE Behavior
+
+After `DISCONNECT_ORACLE` (0x40000000) is processed:
+- The oracle enters "disconnected" state
+- Subsequent CSR writes are silently ignored
+- Subsequent CSR reads return `0`
+- The oracle cannot reconnect; this is a one-way transition
+- zksync-os continues execution in "autonomous mode" (no more oracle queries)
+
+### Query Types
+
+Your oracle must handle these query types (minimum viable set). The "Handler Reference" column points to existing zksync-os implementations that ZKVMs can reuse directly—these are not Airbender-specific and handle the query logic independently of the proving system.
+
+#### Critical Queries (Required)
+
+| Query ID     | Name                         | Input         | Output                         | Handler Reference |
+|--------------|------------------------------|---------------|--------------------------------|-------------------|
+| `0x40070001` | `ZK_PROOF_DATA_INIT`         | None          | Batch metadata, initial state  | [`forward_system/src/run/query_processors/zk_proof_data.rs`](forward_system/src/run/query_processors/zk_proof_data.rs) |
+| `0x40040000` | `INITIAL_STATE_COMMITMENT`   | None          | Initial state root (8 x u32)   | [`forward_system/src/run/query_processors/read_tree.rs`](forward_system/src/run/query_processors/read_tree.rs) |
+| `0x40060000` | `NEXT_TX_SIZE`               | None          | Transaction size in bytes      | [`forward_system/src/run/query_processors/tx_data.rs`](forward_system/src/run/query_processors/tx_data.rs) |
+| `0x40060001` | `TX_DATA_WORDS`              | offset, count | Transaction data               | [`forward_system/src/run/query_processors/tx_data.rs`](forward_system/src/run/query_processors/tx_data.rs) |
+| `0x40060002` | `TX_ENCODING_FORMAT`         | None          | Encoding format ID             | [`forward_system/src/run/query_processors/tx_data.rs`](forward_system/src/run/query_processors/tx_data.rs) |
+| `0x40060003` | `TX_FROM`                    | None          | Sender address (5 x u32)       | [`forward_system/src/run/query_processors/tx_data.rs`](forward_system/src/run/query_processors/tx_data.rs) |
+| `0x40030000` | `INITIAL_STORAGE_SLOT_VALUE` | address, slot | Storage value (8 x u32)        | [`forward_system/src/run/query_processors/read_storage.rs`](forward_system/src/run/query_processors/read_storage.rs) |
+| `0x40020000` | `GENERIC_PREIMAGE`           | hash          | Preimage data                  | [`forward_system/src/run/query_processors/generic_preimage.rs`](forward_system/src/run/query_processors/generic_preimage.rs) |
+| `0x40000000` | `DISCONNECT_ORACLE`          | None          | Empty (switches to autonomous) | [`oracle_provider/src/lib.rs:94`](oracle_provider/src/lib.rs) |
+
+#### Advice Queries (For Precompiles)
+
+| Query ID     | Name                        | Purpose                       | Handler Reference                                                                                    |
+|--------------|-----------------------------|-------------------------------|------------------------------------------------------------------------------------------------------|
+| `0x40050010` | `MODEXP_ADVICE`             | Modular exponentiation result | [`callable_oracles/src/arithmetic/mod.rs`](callable_oracles/src/arithmetic/mod.rs)                   |
+| `0x40050020` | `BLOB_COMMITMENT_AND_PROOF` | KZG commitment verification   | [`callable_oracles/src/blob_kzg_commitment/mod.rs`](callable_oracles/src/blob_kzg_commitment/mod.rs) |
+
+#### Debug (Optional)
+
+| Query ID     | Name   | Purpose                   | Handler Reference |
+|--------------|--------|---------------------------|-------------------|
+| `0xFFFFFFFF` | `UART` | Debug output (write-only) | [`forward_system/src/run/query_processors/uart_print.rs`](forward_system/src/run/query_processors/uart_print.rs) |
+
+#### ZK_PROOF_DATA_INIT Response Format
+
+The exact word layout for `ZK_PROOF_DATA_INIT` (0x40070001) response:
+
 ```
-IDLE ──[write query_type]──► READING_INPUT_LEN
-     ──[write input_len]───► READING_INPUT
-     ──[write input words]─► PROCESSING (after input_len words)
-     ──[dispatch query]────► WRITING_RESPONSE
-     ──[read result_len]───► READING_RESPONSE
-     ──[read result words]─► IDLE (after result_len words)
+Word 0-1:   batch_number (u64, little-endian)
+Word 2-3:   timestamp (u64, little-endian)
+Word 4-5:   l1_gas_price (u64, little-endian)
+Word 6-7:   fair_l2_gas_price (u64, little-endian)
+Word 8-15:  base_system_contract_hash_0 (32 bytes as 8 × u32)
+Word 16-23: base_system_contract_hash_1 (32 bytes as 8 × u32)
+Word 24:    num_transactions (u32)
 ```
+
+#### TX_ENCODING_FORMAT Values
+
+Known encoding format IDs:
+- `0` - Legacy transaction format
+- `1` - EIP-2930 (access list)
+- `2` - EIP-1559 (fee market)
+- `113` (0x71) - EIP-712 (zkSync native)
+
+The format ID determines how `TX_DATA_WORDS` content should be interpreted.
 
 ---
 
-## 5. Query Types to Implement
-
-Your oracle must handle these query types (minimum viable set):
-
-### Critical Queries (Required)
-
-| Query ID     | Name                         | Input         | Output                         |
-|--------------|------------------------------|---------------|--------------------------------|
-| `0x40070001` | `ZK_PROOF_DATA_INIT`         | None          | Batch metadata, initial state  |
-| `0x40040000` | `INITIAL_STATE_COMMITMENT`   | None          | Initial state root (8 x u32)   |
-| `0x40060000` | `NEXT_TX_SIZE`               | None          | Transaction size in bytes      |
-| `0x40060001` | `TX_DATA_WORDS`              | offset, count | Transaction data               |
-| `0x40060002` | `TX_ENCODING_FORMAT`         | None          | Encoding format ID             |
-| `0x40060003` | `TX_FROM`                    | None          | Sender address (5 x u32)       |
-| `0x40030000` | `INITIAL_STORAGE_SLOT_VALUE` | address, slot | Storage value (8 x u32)        |
-| `0x40020000` | `GENERIC_PREIMAGE`           | hash          | Preimage data                  |
-| `0x40000000` | `DISCONNECT_ORACLE`          | None          | Empty (switches to autonomous) |
-
-### Advice Queries (For Precompiles)
-
-| Query ID     | Name                        | Purpose                       |
-|--------------|-----------------------------|-------------------------------|
-| `0x40050010` | `MODEXP_ADVICE`             | Modular exponentiation result |
-| `0x40050020` | `BLOB_COMMITMENT_AND_PROOF` | KZG commitment verification   |
-
-### Debug (Optional)
-
-| Query ID     | Name   | Purpose                   |
-|--------------|--------|---------------------------|
-| `0xFFFFFFFF` | `UART` | Debug output (write-only) |
-
----
-
-## 6. Exit/Completion Detection
+## 4. Exit/Completion Detection
 
 **Success**: Guest enters infinite loop with output in registers x10-x17
 
@@ -231,7 +260,7 @@ If CSR write to address 0xC00 detected → abort with error
 
 ---
 
-## 7. Data Serialization Format
+## 5. Data Serialization Format
 
 All data through the oracle uses **usize serialization** (32-bit words, little-endian):
 
@@ -256,98 +285,7 @@ value & 0xFFFFFFFF       → word 0 (low)
 
 ---
 
-## 8. Implementation Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Your ZKVM                                  │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────────┐   │
-│  │   RV32IM     │    │  CSR Handler │    │  Oracle Provider │   │
-│  │   CPU Core   │◄──►│   (0x7c0)    │◄──►│                  │   │
-│  └──────────────┘    └──────────────┘    │  - Query Parser  │   │
-│         │                                │  - State DB      │   │
-│         ▼                                │  - TX Provider   │   │
-│  ┌──────────────┐                        │  - Preimage DB   │   │
-│  │   Memory     │                        └──────────────────┘   │
-│  │   Subsystem  │                                │              │
-│  │  (ROM + RAM) │                                ▼              │
-│  └──────────────┘                        ┌──────────────────┐   │
-│         │                                │  Ethereum State  │   │
-│         ▼                                │  (external data) │   │
-│  ┌──────────────┐                        └──────────────────┘   │
-│  │   Witness    │                                               │
-│  │   Generator  │◄─── Execution trace for proving               │
-│  └──────────────┘                                               │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 9. Minimal Oracle Provider Pseudocode
-
-```python
-class OracleProvider:
-    def __init__(self, batch_data, state_db):
-        self.batch = batch_data
-        self.state = state_db
-        self.tx_index = 0
-
-        # Query state machine
-        self.query_buffer = []
-        self.response_buffer = []
-        self.state = "AWAIT_QUERY_TYPE"
-        self.expected_input_words = 0
-
-    def csr_write(self, value: u32):
-        if self.state == "AWAIT_QUERY_TYPE":
-            self.query_type = value
-            self.state = "AWAIT_INPUT_LEN"
-        elif self.state == "AWAIT_INPUT_LEN":
-            self.expected_input_words = value
-            self.query_buffer = []
-            if value == 0:
-                self.dispatch_query()
-            else:
-                self.state = "READING_INPUT"
-        elif self.state == "READING_INPUT":
-            self.query_buffer.append(value)
-            if len(self.query_buffer) == self.expected_input_words:
-                self.dispatch_query()
-
-    def csr_read(self) -> u32:
-        if self.state == "RESPONSE_LEN":
-            self.state = "READING_RESPONSE"
-            return len(self.response_buffer)
-        elif self.state == "READING_RESPONSE":
-            value = self.response_buffer.pop(0)
-            if len(self.response_buffer) == 0:
-                self.state = "AWAIT_QUERY_TYPE"
-            return value
-
-    def dispatch_query(self):
-        match self.query_type:
-            case 0x40060000:  # NEXT_TX_SIZE
-                tx = self.batch.transactions[self.tx_index]
-                self.response_buffer = [len(tx)]
-            case 0x40060001:  # TX_DATA_WORDS
-                tx = self.batch.transactions[self.tx_index]
-                offset, count = self.query_buffer
-                self.response_buffer = tx_to_words(tx, offset, count)
-            case 0x40030000:  # STORAGE_SLOT
-                address = words_to_address(self.query_buffer[0:5])
-                slot = words_to_u256(self.query_buffer[5:13])
-                value = self.state.get_storage(address, slot)
-                self.response_buffer = u256_to_words(value)
-            # ... handle other query types
-        self.state = "RESPONSE_LEN"
-```
-
----
-
-## 10. Testing Your Integration
+## 8. Testing recommendations
 
 **Phase 1: Basic Execution**
 1. Load zksync_os.bin, run until first host-guest communication
@@ -369,133 +307,3 @@ class OracleProvider:
 2. Run against mainnet/testnet blocks
 3. Compare output hashes with reference implementation
 
----
-
-## 11. Key Differences from Airbender You Can Ignore
-
-These are airbender-specific and **not required** for basic integration:
-
-| Airbender Feature | Required? | Notes |
-|-------------------|-----------|-------|
-| Witness trace format | No | Use your own trace format |
-| GPU proving pipeline | No | Use your own prover |
-| Delegation circuits | No | Implement precompiles natively or skip |
-| Blake2s circuit delegation | No | Can use native Blake2s |
-| Specific memory implementations | No | Just satisfy the memory map |
-
----
-
-## Summary Checklist
-
-- [ ] RV32IM CPU implementation
-- [ ] Memory map: ROM at 0x0, RAM at 0x200000
-- [ ] Host-guest communication mechanism (CSR 0x7c0 for Airbender compatibility, or your own)
-- [ ] Error exit detection (CSR 0xC00 write for Airbender, or replace `riscv_common`)
-- [ ] Query protocol state machine
-- [ ] Oracle provider with query dispatch
-- [ ] Infinite loop detection for success exit
-- [ ] Output extraction from x10-x17
-- [ ] Witness generation for your proof system
-
-The coupling to Airbender is in the **runtime libraries** (`riscv_common`, delegation crates) that use CSRs. The core zksync-os logic is abstract. You can either match Airbender's CSR interface for binary compatibility, or provide replacement libraries and recompile.
-
----
-
-## 12. Implementation Gotchas & Errata
-
-The following issues were discovered during actual implementation and are not obvious from the above documentation:
-
-### 12.1 CSR Sign Extension Bug
-
-CSR addresses are 12-bit unsigned values, but the immediate field in RISC-V I-type instructions is **sign-extended** from 12 bits to 32 bits. CSR `0xc00` has bit 11 set, so naive decoding produces `0xFFFFFC00`:
-
-```rust
-// WRONG - what naive implementation does
-let csr = dec_insn.imm;  // Returns 0xFFFFFC00 for CSR 0xc00!
-
-// CORRECT - must mask to 12 bits
-let csr = (dec_insn.imm as u32) & 0xFFF;  // Returns 0xc00
-```
-
-**This will cause error exit detection to fail silently** if not handled correctly.
-
-### 12.2 Only CSRRW is Used
-
-zksync-os **only uses the `CSRRW` instruction** (funct3 = 0b001). You do not need to implement:
-- `CSRRS` (read and set bits) - funct3 = 0b010
-- `CSRRC` (read and clear bits) - funct3 = 0b011
-- `CSRRWI` (immediate write) - funct3 = 0b101
-- `CSRRSI` (immediate set) - funct3 = 0b110
-- `CSRRCI` (immediate clear) - funct3 = 0b111
-
-### 12.3 ISA Extensions
-
-| Requirement | Specification |
-|-------------|---------------|
-| Base ISA | RV32I (32-bit integer) |
-| Extensions | **M** (multiply/divide) |
-| Optional | **Zicsr** (only if using Airbender's CSR-based host-guest interface) |
-
-Note: Zicsr is only needed for Airbender binary compatibility. If you recompile with your own host-guest mechanism, you may not need CSR instructions at all.
-
-### 12.4 Edge Case: CSRRW with rd=0 and rs1=0
-
-The instruction `csrrw x0, 0x7c0, x0` is valid but performs no useful oracle operation:
-- rd=0 means "don't read from oracle" (discard read value)
-- rs1=0 means "write zero to oracle"
-
-Recommended handling: Either treat as no-op or write 0 to the oracle query buffer. zksync-os does not emit this instruction pattern in practice.
-
-### 12.5 ZK_PROOF_DATA_INIT Response Format
-
-The exact word layout for `ZK_PROOF_DATA_INIT` (0x40070001) response:
-
-```
-Word 0-1:   batch_number (u64, little-endian)
-Word 2-3:   timestamp (u64, little-endian)
-Word 4-5:   l1_gas_price (u64, little-endian)
-Word 6-7:   fair_l2_gas_price (u64, little-endian)
-Word 8-15:  base_system_contract_hash_0 (32 bytes as 8 × u32)
-Word 16-23: base_system_contract_hash_1 (32 bytes as 8 × u32)
-Word 24:    num_transactions (u32)
-```
-
-### 12.6 DISCONNECT_ORACLE Behavior
-
-After `DISCONNECT_ORACLE` (0x40000000) is processed:
-- The oracle enters "disconnected" state
-- Subsequent CSR writes are silently ignored
-- Subsequent CSR reads return `0`
-- The oracle cannot reconnect; this is a one-way transition
-- zksync-os continues execution in "autonomous mode" (no more oracle queries)
-
-### 12.7 Error Handling
-
-Oracle query error handling is **not well-defined** in zksync-os. Observed behaviors:
-- Missing preimage: zksync-os may panic or enter error state
-- Invalid query type: Undefined behavior (oracle should reject)
-- Malformed input: Undefined behavior
-
-**Recommendation**: Return an error indicator (e.g., result_len = 0xFFFFFFFF) or trigger error exit. The safest approach is to ensure all required data is available before execution.
-
-### 12.8 Query Dependencies
-
-While not strictly enforced, the expected query order is:
-1. `ZK_PROOF_DATA_INIT` - Called once at startup
-2. `INITIAL_STATE_COMMITMENT` - Called once after init
-3. For each transaction:
-   - `NEXT_TX_SIZE`
-   - `TX_DATA_WORDS` (possibly multiple calls)
-   - `TX_ENCODING_FORMAT`
-   - Various storage/preimage queries during execution
-4. `DISCONNECT_ORACLE` - Called when transitioning to autonomous mode
-
-### 12.9 TX_ENCODING_FORMAT Values
-
-Known encoding format IDs:
-- `0` - Legacy transaction format
-- `1` - EIP-2930 (access list)
-- `2` - EIP-1559 (fee market)
-- `113` (0x71) - EIP-712 (zkSync native)
-
-The format ID determines how `TX_DATA_WORDS` content should be interpreted.
