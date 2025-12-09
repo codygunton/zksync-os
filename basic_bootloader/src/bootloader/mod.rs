@@ -212,7 +212,7 @@ where
                         }
                         Ok(tx_processing_result) => {
                             // TODO: debug implementation for ruint types uses global alloc, which panics in ZKsync OS
-                            #[cfg(not(target_arch = "riscv32"))]
+                            #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
                             let _ = system.get_logger().write_fmt(format_args!(
                                 "Tx execution result = {:?}\n",
                                 &tx_processing_result,
@@ -333,7 +333,7 @@ where
         let l1_to_l2_tx_hash = Bytes32::from(l1_to_l2_txs_hasher.finalize());
 
         // uses global alloc
-        #[cfg(not(target_arch = "riscv32"))]
+        #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
         cycle_marker::log_marker(
             alloc::format!(
                 "Spent ergs for [run_prepared]: {}",

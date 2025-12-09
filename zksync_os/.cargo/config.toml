@@ -1,9 +1,16 @@
 [build]
-target = "riscv32i-unknown-none-elf"
+target = "riscv64im-unknown-none-elf.json"
+
+[unstable]
+build-std = ["core", "alloc"]
+build-std-features = ["compiler-builtins-mem"]
+
+[target.riscv64im-unknown-none-elf]
 rustflags = [
   "-C", "target-feature=+m,-unaligned-scalar-mem,+relax",
-  "-C", "link-arg=-Tsrc/lds/memory.x",
-  "-C", "link-arg=-Tsrc/lds/link.x",
+  "-C", "link-arg=-Lsrc/lds",
+  "-C", "link-arg=-Tmemory.x",
+  "-C", "link-arg=-Tlink.x",
   "-C", "link-arg=--save-temps",
   "-C", "force-frame-pointers",
   # reproducibility

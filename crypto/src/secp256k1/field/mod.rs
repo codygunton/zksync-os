@@ -2,9 +2,9 @@ use crate::k256::FieldBytes;
 use cfg_if::cfg_if;
 use core::ops::{AddAssign, MulAssign, SubAssign};
 
-#[cfg(any(target_arch = "riscv32", test, all(feature = "proving", fuzzing)))]
+#[cfg(any(any(target_arch = "riscv32", target_arch = "riscv64"), test, all(feature = "proving", fuzzing)))]
 mod field_10x26;
-#[cfg(any(target_arch = "riscv32", test, all(feature = "proving", fuzzing)))]
+#[cfg(any(any(target_arch = "riscv32", target_arch = "riscv64"), test, all(feature = "proving", fuzzing)))]
 mod mod_inv32;
 
 #[cfg(any(target_pointer_width = "64", test, all(feature = "proving", fuzzing)))]
@@ -13,7 +13,7 @@ mod field_5x52;
 mod mod_inv64;
 
 #[cfg(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     test,
     all(feature = "proving", fuzzing)
 ))]

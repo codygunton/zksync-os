@@ -1,4 +1,4 @@
-#![cfg(not(target_arch = "riscv32"))]
+#![cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
 
 use core::fmt::Display;
 
@@ -42,7 +42,7 @@ impl IErrorContext for ErrorContext {
             let value = value.to_string();
             self.values.push(NamedContextElement { name, value })
         };
-        if cfg!(not(target_arch = "riscv32")) {
+        if cfg!(not(any(target_arch = "riscv32", target_arch = "riscv64"))) {
             match visibility {
                 ValueVisibility::AnyForwardRun => perform_push_value(),
                 ValueVisibility::DetailedOnly if cfg!(feature = "detailed_errors") => {

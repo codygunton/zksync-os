@@ -5,7 +5,7 @@ use super::{
     subsystem::{Subsystem, SubsystemError},
 };
 
-#[cfg_attr(target_arch = "riscv32", derive(Copy))]
+#[cfg_attr(any(target_arch = "riscv32", target_arch = "riscv64"), derive(Copy))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SystemError {
     LeafDefect(InternalError),

@@ -36,7 +36,7 @@ pub trait IErrorContext {
     fn into_vec(self) -> Option<Vec<NamedContextElement>>;
 }
 
-#[cfg(not(target_arch = "riscv32"))]
+#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
 pub type ErrorContext = nonempty::ErrorContext;
-#[cfg(target_arch = "riscv32")]
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 pub type ErrorContext = empty::ErrorContext;

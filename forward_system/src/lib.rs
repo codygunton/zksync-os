@@ -4,7 +4,7 @@
 #![allow(clippy::type_complexity)]
 #![allow(clippy::too_many_arguments)]
 #![cfg_attr(
-    any(feature = "error_origins", not(target_arch = "riscv32")),
+    any(feature = "error_origins", not(any(target_arch = "riscv32", target_arch = "riscv64"))),
     allow(clippy::result_large_err)
 )]
 

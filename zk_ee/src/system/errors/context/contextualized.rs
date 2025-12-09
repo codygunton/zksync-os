@@ -7,16 +7,16 @@ pub trait Contextualized<E>: Sized {
     }
 
     #[inline(always)]
-    #[cfg_attr(target_arch = "riscv32", allow(unused))]
+    #[cfg_attr(any(target_arch = "riscv32", target_arch = "riscv64"), allow(unused))]
     fn with_context<F>(self, f: F) -> E
     where
         F: FnOnce() -> ErrorContext,
     {
-        #[cfg(target_arch = "riscv32")]
+        #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
         {
             self.with_context_inner(|| ErrorContext::default())
         }
-        #[cfg(not(target_arch = "riscv32"))]
+        #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
         {
             self.with_context_inner(f)
         }

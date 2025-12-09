@@ -1,7 +1,7 @@
 use super::u256::U256;
 use crate::BigIntOps;
 
-#[cfg(all(target_arch = "riscv32", feature = "bigint_ops"))]
+#[cfg(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"))]
 const CARRY_BIT_IDX: usize = 6;
 
 #[inline(always)]
@@ -60,7 +60,7 @@ fn bigint_op_delegation(a: *mut U256, b: *const U256, op: BigIntOps) -> u32 {
     bigint_op_delegation_with_carry_bit(a, b, false, op)
 }
 
-#[cfg(all(target_arch = "riscv32", feature = "bigint_ops"))]
+#[cfg(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"))]
 #[inline(always)]
 pub(crate) fn bigint_op_delegation_with_carry_bit(
     a: *mut U256,
@@ -91,7 +91,7 @@ pub(crate) fn bigint_op_delegation_with_carry_bit(
     mask
 }
 
-#[cfg(not(all(target_arch = "riscv32", feature = "bigint_ops")))]
+#[cfg(not(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops")))]
 #[inline(always)]
 pub(crate) fn bigint_op_delegation_with_carry_bit(
     _a_ptr: *mut U256,

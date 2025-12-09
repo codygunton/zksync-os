@@ -12,7 +12,7 @@ mod scalar64;
 mod scalar32;
 
 #[cfg(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     test,
     all(feature = "proving", fuzzing)
 ))]

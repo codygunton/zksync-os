@@ -36,7 +36,7 @@ pub struct ModExpAdviceParams {
 }
 
 #[cfg(any(
-    all(target_arch = "riscv32", feature = "proving"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "proving"),
     test,
     feature = "testing"
 ))]
@@ -210,7 +210,7 @@ fn modexp_as_system_function_inner<
 
     // Call the modexp.
 
-    #[cfg(any(all(target_arch = "riscv32", feature = "proving"), test))]
+    #[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "proving"), test))]
     let output = self::delegation::modexp(
         base.as_slice(),
         exponent.as_slice(),
@@ -220,7 +220,7 @@ fn modexp_as_system_function_inner<
         allocator,
     );
 
-    #[cfg(not(any(all(target_arch = "riscv32", feature = "proving"), test)))]
+    #[cfg(not(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "proving"), test)))]
     let output = ::modexp::modexp(
         base.as_slice(),
         exponent.as_slice(),

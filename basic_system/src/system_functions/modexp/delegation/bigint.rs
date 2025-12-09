@@ -1,7 +1,7 @@
 // Representation of big integers using primitives that are friendly for our delegations
 extern crate alloc;
 
-#[cfg(any(all(target_arch = "riscv32", feature = "proving"), test))]
+#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "proving"), test))]
 use super::super::{ModExpAdviceParams, MODEXP_ADVICE_QUERY_ID};
 use super::u256::*;
 use alloc::vec::Vec;
@@ -9,7 +9,7 @@ use core::alloc::Allocator;
 use core::fmt::Debug;
 use core::mem::MaybeUninit;
 use crypto::{bigint_op_delegation_raw, bigint_op_delegation_with_carry_bit_raw, BigIntOps};
-#[cfg(any(all(target_arch = "riscv32", feature = "proving"), test))]
+#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "proving"), test))]
 use zk_ee::oracle::IOOracle;
 
 // There is a small choice to make - either we do exponentiation walking as via LE or BE exponent.
@@ -812,20 +812,17 @@ pub(crate) mod naive_advisor {
     }
 }
 
-#[cfg(any(all(target_arch = "riscv32", feature = "proving"), test))]
+#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "proving"), test))]
 pub(crate) struct OracleAdvisor<'a, O: IOOracle> {
     pub(crate) inner: &'a mut O,
 }
 
-#[cfg(any(all(target_arch = "riscv32", feature = "proving"), test))]
+#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "proving"), test))]
 fn write_bigint(
     it: &mut impl ExactSizeIterator<Item = usize>,
     mut to_consume: usize,
     dst: &mut BigintRepr<impl Allocator + Clone>,
 ) {
-    const {
-        assert!(core::mem::size_of::<usize>() == core::mem::size_of::<u32>());
-    }
     // NOTE: even if oracle overstates the number of digits (so - iterator length), it is not important
     // as long as caller checks that number of digits is within bounds of soundness
     unsafe {
@@ -848,7 +845,7 @@ fn write_bigint(
     }
 }
 
-#[cfg(any(all(target_arch = "riscv32", feature = "proving"), test))]
+#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "proving"), test))]
 impl<'a, O: IOOracle> ModexpAdvisor for OracleAdvisor<'a, O> {
     fn get_reduction_op_advice<A: Allocator + Clone>(
         &mut self,
@@ -898,10 +895,6 @@ impl<'a, O: IOOracle> ModexpAdvisor for OracleAdvisor<'a, O> {
         };
 
         let max_remainder_digits = m.digits;
-
-        const {
-            assert!(core::mem::size_of::<usize>() == core::mem::size_of::<u32>());
-        }
 
         // check that hint is "sane" in upper bound
 

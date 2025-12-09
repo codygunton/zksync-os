@@ -8,7 +8,7 @@ use super::{
 /// Internal error, should not be triggered by user input.
 /// Do not construct it explicitly; instead, use the macro [`internal_error`].
 ///
-#[cfg_attr(target_arch = "riscv32", derive(Copy))]
+#[cfg_attr(any(target_arch = "riscv32", target_arch = "riscv64"), derive(Copy))]
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct InternalError(pub &'static str, pub Metadata);
 

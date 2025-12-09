@@ -20,7 +20,7 @@ pub unsafe fn bigint_op_delegation<const OP_SHIFT: usize>(
     bigint_op_delegation_with_carry_bit::<OP_SHIFT>(a, b, false)
 }
 
-#[cfg(target_arch = "riscv32")]
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 #[inline(always)]
 /// # Safety
 /// `a` and `b` must be 32 bytes aligned and point to 32 bytes of accessible memory.
@@ -45,7 +45,7 @@ pub unsafe fn bigint_op_delegation_with_carry_bit<const OP_SHIFT: usize>(
     mask
 }
 
-#[cfg(not(target_arch = "riscv32"))]
+#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
 #[inline(always)]
 /// # Safety
 /// `a` and `b` must be 32 bytes aligned and point to 32 bytes of accessible memory.

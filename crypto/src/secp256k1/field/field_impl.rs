@@ -4,7 +4,7 @@ use cfg_if::cfg_if;
 
 cfg_if! {
     if #[cfg(
-        any(target_arch = "riscv32"),
+        any(any(target_arch = "riscv32", target_arch = "riscv64")),
         all(feature = "proving", fuzzing)
     )] {
         use super::field_10x26::{FieldElement10x26 as FieldElementInner, FieldStorage10x26 as FieldStorageInner};

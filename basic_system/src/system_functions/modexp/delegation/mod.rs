@@ -11,7 +11,7 @@ use zk_ee::system::logger::Logger;
 #[cfg(feature = "testing")]
 use zk_ee::system::logger::NullLogger;
 
-#[cfg(any(all(target_arch = "riscv32", feature = "proving"), test))]
+#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "proving"), test))]
 pub(super) fn modexp<O: zk_ee::oracle::IOOracle, L: Logger, A: Allocator + Clone>(
     base: &[u8],
     exp: &[u8],

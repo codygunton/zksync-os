@@ -755,7 +755,7 @@ where
             - main_native_used_for_pubdata;
 
         // uses global alloc
-        #[cfg(not(target_arch = "riscv32"))]
+        #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
         cycle_marker::log_marker(
             alloc::format!(
                 "Spent ergs for [process_transaction]: {}",
@@ -764,7 +764,7 @@ where
             .as_str(),
         );
         // uses global alloc
-        #[cfg(not(target_arch = "riscv32"))]
+        #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
         cycle_marker::log_marker(
             alloc::format!("Spent native for [process_transaction]: {computational_native_used}")
                 .as_str(),

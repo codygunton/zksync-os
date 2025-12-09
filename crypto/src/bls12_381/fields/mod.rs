@@ -1,43 +1,43 @@
-// #[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+// #[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"), test))]
 // pub mod fq;
-// #[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+// #[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"), test))]
 // pub use self::fq::{init, Fq};
 
 #[cfg(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     test,
     all(feature = "proving", fuzzing)
 ))]
 pub mod fq;
 #[cfg(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     test,
     all(feature = "proving", fuzzing)
 ))]
 pub use self::fq::Fq;
 
 #[cfg(not(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     test,
     all(feature = "proving", fuzzing)
 )))]
 pub use ark_bls12_381::Fq;
 
 #[cfg(not(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     test,
     all(feature = "proving", fuzzing)
 )))]
 pub use ark_bls12_381::Fr;
 
 #[cfg(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     test,
     all(feature = "proving", fuzzing)
 ))]
 pub mod fr;
 #[cfg(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     test,
     all(feature = "proving", fuzzing)
 ))]

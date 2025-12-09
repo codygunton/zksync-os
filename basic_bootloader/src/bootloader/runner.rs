@@ -116,7 +116,7 @@ impl<'external, S: EthereumLikeTypes> ExecutionContext<'_, 'external, S> {
         S::IO: IOSubsystemExt,
     {
         // TODO: debug implementation for ruint types uses global alloc, which panics in ZKsync OS
-        #[cfg(not(target_arch = "riscv32"))]
+        #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
         {
             let _ = self.system.get_logger().write_fmt(format_args!(
                 "External call or deploy to {:?}\n",

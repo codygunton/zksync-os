@@ -1,23 +1,23 @@
 #[cfg(not(any(
-    all(feature = "single_round_with_control", target_arch = "riscv32"),
+    all(feature = "single_round_with_control", any(target_arch = "riscv32", target_arch = "riscv64")),
     all(feature = "proving", fuzzing)
 )))]
 mod naive;
 
 #[cfg(not(any(
-    all(feature = "single_round_with_control", target_arch = "riscv32"),
+    all(feature = "single_round_with_control", any(target_arch = "riscv32", target_arch = "riscv64")),
     all(feature = "proving", fuzzing)
 )))]
 pub use naive::Blake2s256;
 
 #[cfg(any(
-    all(feature = "single_round_with_control", target_arch = "riscv32"),
+    all(feature = "single_round_with_control", any(target_arch = "riscv32", target_arch = "riscv64")),
     all(feature = "proving", fuzzing)
 ))]
 mod delegated_extended;
 
 #[cfg(any(
-    all(feature = "single_round_with_control", target_arch = "riscv32"),
+    all(feature = "single_round_with_control", any(target_arch = "riscv32", target_arch = "riscv64")),
     all(feature = "proving", fuzzing)
 ))]
 pub use delegated_extended::{initialize_blake2s_delegation_context, Blake2s256};

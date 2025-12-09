@@ -7,14 +7,14 @@ use super::{
 };
 
 /// Errors that lead to a transaction-level revert.
-#[cfg_attr(target_arch = "riscv32", derive(Copy))]
+#[cfg_attr(any(target_arch = "riscv32", target_arch = "riscv64"), derive(Copy))]
 #[derive(Clone, Debug, PartialEq, Eq, IntoStaticStr)]
 pub enum FatalRuntimeError {
     OutOfNativeResources(Metadata),
     OutOfReturnMemory(Metadata),
 }
 
-#[cfg_attr(target_arch = "riscv32", derive(Copy))]
+#[cfg_attr(any(target_arch = "riscv32", target_arch = "riscv64"), derive(Copy))]
 #[derive(Clone, Debug, PartialEq, Eq, IntoStaticStr)]
 pub enum RuntimeError {
     FatalRuntimeError(FatalRuntimeError),

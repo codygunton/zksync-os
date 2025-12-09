@@ -109,9 +109,6 @@ mod csr {
     {
         #[inline(always)]
         fn csr_read_impl() -> usize {
-            const {
-                assert!(core::mem::size_of::<usize>() == core::mem::size_of::<u32>());
-            }
             csr_read_word() as usize
         }
         #[inline(always)]

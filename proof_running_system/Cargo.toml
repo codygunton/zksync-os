@@ -23,8 +23,7 @@ arrayvec = { version = "0.7.4", default-features = false }
 cfg-if = "*"
 cc-traits = { version = "*", default-features = false }
 seq-macro = { version = "*", default-features = false }
-talc = { version = "*", default-features = false, features = ["allocator", "nightly_api"]}
-lock_api = "0.4.11"
+talc = { version = "*", default-features = false, features = ["nightly_api"]}
 # talc = { path = "../../talc", default-features = false, features = ["allocator", "nightly_api"]}
 
 [dev-dependencies]

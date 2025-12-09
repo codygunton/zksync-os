@@ -3,13 +3,13 @@ use ark_ff::PrimeField;
 use ark_serialize::SerializationError;
 
 #[cfg(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     test,
     all(feature = "proving", fuzzing)
 ))]
 use crate::ark_ff_delegation::BigInt;
 #[cfg(not(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     test,
     all(feature = "proving", fuzzing)
 )))]
@@ -74,7 +74,7 @@ impl EncodingFlags {
 }
 
 #[cfg(not(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     test,
     all(feature = "proving", fuzzing)
 )))]
@@ -95,7 +95,7 @@ pub(crate) fn deserialize_fq(bytes: [u8; 48]) -> Option<Fq> {
 }
 
 #[cfg(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     test,
     all(feature = "proving", fuzzing)
 ))]

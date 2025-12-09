@@ -383,7 +383,7 @@ impl<'ee, S: EthereumLikeTypes> Interpreter<'ee, S> {
                         observable_bytecode_len,
                     )) => {
                         // TODO: debug implementation for Bits uses global alloc, which panics in ZKsync OS
-                        #[cfg(not(target_arch = "riscv32"))]
+                        #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
                         let _ = system.get_logger().write_fmt(format_args!(
                             "Successfully deployed contract at {:?} \n",
                             self.address

@@ -1,5 +1,5 @@
 #[cfg(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     test,
     all(feature = "proving", fuzzing)
 ))]
@@ -11,7 +11,7 @@ use core::ops::MulAssign;
 
 cfg_if::cfg_if! {
     if #[cfg(any(
-        all(target_arch = "riscv32", feature = "bigint_ops"),
+        all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
         all(feature = "proving", fuzzing)
     ))] {
         pub(super) use fe32_delegation::FieldElement;
@@ -140,7 +140,7 @@ impl FieldElementConst {
     }
 
     #[cfg(not(any(
-        all(target_arch = "riscv32", feature = "bigint_ops"),
+        all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
         all(feature = "proving", fuzzing)
     )))]
     pub(super) const fn to_fe(self) -> FieldElement {
@@ -148,7 +148,7 @@ impl FieldElementConst {
     }
 
     #[cfg(any(
-        all(target_arch = "riscv32", feature = "bigint_ops"),
+        all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
         all(feature = "proving", fuzzing)
     ))]
     pub(super) const fn to_fe(self) -> FieldElement {

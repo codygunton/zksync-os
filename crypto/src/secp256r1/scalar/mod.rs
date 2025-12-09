@@ -1,12 +1,12 @@
 #[cfg(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     test,
     all(feature = "proving", fuzzing)
 ))]
 mod scalar_delegation;
 
 #[cfg(not(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     all(feature = "proving", fuzzing)
 )))]
 mod scalar64;
@@ -15,7 +15,7 @@ use core::ops::{Mul, Neg};
 
 cfg_if::cfg_if! {
     if #[cfg(any(
-        all(target_arch = "riscv32", feature = "bigint_ops"),
+        all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
         all(feature = "proving", fuzzing)
     ))] {
         pub(super) use scalar_delegation::Scalar;

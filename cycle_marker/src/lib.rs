@@ -1,4 +1,4 @@
-#![cfg_attr(target_arch = "riscv32", no_std)]
+#![cfg_attr(any(target_arch = "riscv32", target_arch = "riscv64"), no_std)]
 
 //! Markers to capture basic RISC-V simulator measurements for
 //! a block of rust code.
@@ -24,7 +24,7 @@ enum Label {
     End(&'static str),
 }
 
-#[cfg(not(target_arch = "riscv32"))]
+#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
 thread_local! {
   /// Forward run collects the labels, so that we don't incur in more RISC-V cycles
   static LABELS: std::cell::RefCell<Vec<Label>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -34,17 +34,17 @@ thread_local! {
 }
 
 #[allow(dead_code)]
-#[cfg(not(target_arch = "riscv32"))]
+#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
 fn init_marker_file() -> std::fs::File {
     let path = std::env::var("MARKER_PATH").unwrap_or("markers.bench".to_string());
     std::fs::File::create(path).expect("Failed to create marker file")
 }
 
 #[allow(dead_code)]
-#[cfg(all(not(feature = "log_to_file"), not(target_arch = "riscv32")))]
+#[cfg(all(not(feature = "log_to_file"), not(any(target_arch = "riscv32", target_arch = "riscv64"))))]
 pub fn log_marker(_msg: &str) {}
 
-#[cfg(all(feature = "log_to_file", not(target_arch = "riscv32")))]
+#[cfg(all(feature = "log_to_file", not(any(target_arch = "riscv32", target_arch = "riscv64"))))]
 pub fn log_marker(msg: &str) {
     use std::io::Write;
     MARKER_FILE.with(|f| {
@@ -56,7 +56,7 @@ pub fn log_marker(msg: &str) {
 /// let the simulator know that we need a new marker.
 /// For forward run this will just collect the label.
 pub fn start(_label: &'static str) {
-    #[cfg(target_arch = "riscv32")]
+    #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
     {
         unsafe {
             let word = 0;
@@ -68,7 +68,7 @@ pub fn start(_label: &'static str) {
         }
     }
 
-    #[cfg(not(target_arch = "riscv32"))]
+    #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
     LABELS.with_borrow_mut(|v| v.push(Label::Start(_label)))
 }
 
@@ -76,7 +76,7 @@ pub fn start(_label: &'static str) {
 /// let the simulator know that we need a new marker.
 /// For forward run this will just collect the label.
 pub fn end(_label: &'static str) {
-    #[cfg(target_arch = "riscv32")]
+    #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
     {
         unsafe {
             let word = 0;
@@ -88,7 +88,7 @@ pub fn end(_label: &'static str) {
         }
     }
 
-    #[cfg(not(target_arch = "riscv32"))]
+    #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
     LABELS.with_borrow_mut(|v| v.push(Label::End(_label)))
 }
 
@@ -125,7 +125,7 @@ macro_rules! wrap {
 #[macro_export]
 macro_rules! wrap_with_resources {
     ($label:expr, $resources:expr, $code:block) => {{
-        #[cfg(not(target_arch = "riscv32"))]
+        #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
         {
             use alloc::format;
             let resources_before = $resources.clone();
@@ -148,7 +148,7 @@ macro_rules! wrap_with_resources {
             ));
             __result
         }
-        #[cfg(target_arch = "riscv32")]
+        #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
         {
             $crate::start!($label);
             let __result = (|| $code)();
@@ -158,7 +158,7 @@ macro_rules! wrap_with_resources {
     }};
 }
 
-#[cfg(all(feature = "use_risc_v_simulator", not(target_arch = "riscv32")))]
+#[cfg(all(feature = "use_risc_v_simulator", not(any(target_arch = "riscv32", target_arch = "riscv64"))))]
 pub fn print_cycle_markers() -> Option<u64> {
     const BLAKE_DELEGATION_ID: u32 = 1991;
     const BIGINT_DELEGATION_ID: u32 = 1994;

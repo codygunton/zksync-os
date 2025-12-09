@@ -62,9 +62,6 @@ impl<NDS: NonDeterminismCSRSourceImplementation> IOOracle for CsrBasedIOOracle<N
         query_type: u32,
         input: &I,
     ) -> Result<Self::RawIterator<'a>, InternalError> {
-        const {
-            assert!(core::mem::size_of::<usize>() == core::mem::size_of::<u32>());
-        }
         NDS::csr_write_impl(query_type as usize);
         let iter_to_write = UsizeSerializable::iter(input);
         // write length

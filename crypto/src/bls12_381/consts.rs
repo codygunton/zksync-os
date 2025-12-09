@@ -1,5 +1,5 @@
 #[cfg(not(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     all(feature = "proving", fuzzing),
     test
 )))]
@@ -58,7 +58,7 @@ pub const G2_BY_TAU_POINT:
     };
 
 #[cfg(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     all(feature = "proving", fuzzing),
     test
 ))]
@@ -164,7 +164,7 @@ pub const G2_BY_TAU_POINT:
 // }
 // println!("    ],");
 #[cfg(not(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     all(feature = "proving", fuzzing),
     test
 )))]
@@ -5250,7 +5250,7 @@ pub const PREPARED_G2_GENERATOR:
 // QuasiUART::new().write_fmt(format_args!("    infinity: {:?},\n", prepared_g2_generator.infinity)).unwrap();
 // QuasiUART::new().write_fmt(format_args!("}};\n")).unwrap();
 #[cfg(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     all(feature = "proving", fuzzing),
     test
 ))]
