@@ -1,3 +1,8 @@
+/*
+ * Linker script for machines with 512M RAM (Zisk, QEMU)
+ * Stack: 16M, Heap: 440M (fits in 512M with room for .bss/.data)
+ */
+
 PROVIDE(_stext = ORIGIN(REGION_TEXT));
 PROVIDE(_max_hart_id = 0);
 PROVIDE(_hart_stack_size = 16M);

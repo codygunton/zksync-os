@@ -8,6 +8,8 @@
  * This matches Zisk's memory map defined in zisk/core/src/mem.rs:
  *   ROM_ADDR = 0x80000000
  *   RAM_ADDR = 0xa0000000
+ *
+ * Used by: config.toml (default), setup_zksyncos.sh, execute.sh
  */
 
 MEMORY
