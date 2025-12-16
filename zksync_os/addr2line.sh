@@ -17,7 +17,11 @@ if [[ $# -lt 1 ]]; then
     exit 1
 fi
 
+# Normalize address to have 0x prefix
 PROD_ADDR="$1"
+if [[ ! "$PROD_ADDR" =~ ^0[xX] ]]; then
+    PROD_ADDR="0x$PROD_ADDR"
+fi
 PROD_ADDR_DEC=$((PROD_ADDR))
 
 if [[ ! -f "$PROD_ELF" ]]; then
@@ -67,7 +71,22 @@ printf "Offset within function: +0x%x\n" "$OFFSET"
 echo ""
 
 # Find the same symbol in debug build
-DEBUG_FUNC_ADDR=$(riscv64-elf-nm "$DEBUG_ELF" 2>/dev/null | grep -E "^[0-9a-f]+ [tT] ${FUNC_NAME}$" | awk '{print $1}')
+# Escape special regex characters in symbol name
+FUNC_NAME_ESCAPED=$(printf '%s' "$FUNC_NAME" | sed 's/[][$.*^\\]/\\&/g')
+
+# First try exact match
+DEBUG_FUNC_ADDR=$(riscv64-elf-nm "$DEBUG_ELF" 2>/dev/null | grep -E "^[0-9a-f]+ [tT] ${FUNC_NAME_ESCAPED}$" | awk '{print $1}')
+
+# If not found, try matching without the Rust hash suffix (17h...E)
+if [[ -z "$DEBUG_FUNC_ADDR" ]]; then
+    # Strip the hash suffix from the production symbol
+    FUNC_NAME_NO_HASH=$(echo "$FUNC_NAME" | sed 's/17h[0-9a-fA-F]*E$//')
+    if [[ "$FUNC_NAME_NO_HASH" != "$FUNC_NAME" ]]; then
+        # Escape and search for a symbol with the same prefix (different hash)
+        FUNC_NAME_NO_HASH_ESCAPED=$(printf '%s' "$FUNC_NAME_NO_HASH" | sed 's/[][$.*^\\]/\\&/g')
+        DEBUG_FUNC_ADDR=$(riscv64-elf-nm "$DEBUG_ELF" 2>/dev/null | grep -E "^[0-9a-f]+ [tT] ${FUNC_NAME_NO_HASH_ESCAPED}17h[0-9a-fA-F]+E$" | head -1 | awk '{print $1}')
+    fi
+fi
 
 if [[ -z "$DEBUG_FUNC_ADDR" ]]; then
     echo "Error: Symbol '$FUNC_NAME' not found in debug build"
