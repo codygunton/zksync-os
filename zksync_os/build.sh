@@ -104,7 +104,7 @@ case "$MACHINE" in
 esac
 
 # Features for the build
-FEATURES="proving,eth_runner,print_debug_info"
+FEATURES="proving,eth_runner"
 
 # Build output file names
 if $DEBUG; then
@@ -156,9 +156,6 @@ if $CLEAN; then
     cargo clean
 fi
 
-# Clean up only the artifacts for this build
-rm -f "$BIN_NAME" "$ELF_NAME" "$TEXT_NAME"
-
 echo "Building..."
 cargo build --features "$FEATURES" --release --target "$TARGET" $BUILD_STD_FLAGS
 
@@ -185,13 +182,13 @@ DUMP_NAME="zksync_os_${SUFFIX}.dump"
 echo ""
 echo "Creating disassembly with demangled symbols..."
 if $DEBUG; then
-    riscv64-elf-objdump -d -C -S "$ELF_NAME" > "$DUMP_NAME" 2>/dev/null || \
-      llvm-objdump -d --demangle -S "$ELF_NAME" > "$DUMP_NAME" 2>/dev/null || \
-      echo "Warning: Could not create disassembly dump"
+    riscv64-elf-objdump -d -C -S "$ELF_NAME" > "$DUMP_NAME" 2> /dev/null \
+        || llvm-objdump -d --demangle -S "$ELF_NAME" > "$DUMP_NAME" 2> /dev/null \
+        || echo "Warning: Could not create disassembly dump"
 else
-    riscv64-elf-objdump -d -C "$ELF_NAME" > "$DUMP_NAME" 2>/dev/null || \
-      llvm-objdump -d --demangle "$ELF_NAME" > "$DUMP_NAME" 2>/dev/null || \
-      echo "Warning: Could not create disassembly dump"
+    riscv64-elf-objdump -d -C "$ELF_NAME" > "$DUMP_NAME" 2> /dev/null \
+        || llvm-objdump -d --demangle "$ELF_NAME" > "$DUMP_NAME" 2> /dev/null \
+        || echo "Warning: Could not create disassembly dump"
 fi
 echo "  $DUMP_NAME (disassembly with demangled symbols)"
 
