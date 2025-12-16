@@ -8,8 +8,11 @@
 
 set -e
 
-PROD_ELF="zksync_os_zisk.elf"
-DEBUG_ELF="zksync_os_zisk_debug.elf"
+# Get the directory where this script lives
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+PROD_ELF="$SCRIPT_DIR/zksync_os_zisk.elf"
+DEBUG_ELF="$SCRIPT_DIR/zksync_os_zisk_debug.elf"
 
 if [[ $# -lt 1 ]]; then
     echo "Usage: $0 <production_address>"
