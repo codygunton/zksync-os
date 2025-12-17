@@ -592,7 +592,26 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
 
         let proof_input = if !only_forward {
             if let Some(path) = witness_output_file {
+                #[cfg(feature = "zisk-witness")]
+                let result = {
+                    // Create oracle with DummyMemorySource for Zisk
+                    let zisk_oracle: ZkEENonDeterminismSource<DummyMemorySource> =
+                        oracle_factory.create_oracle(
+                            block_metadata,
+                            self.state_tree.clone(),
+                            self.preimage_source.clone(),
+                            tx_source.clone(),
+                            Some(proof_data),
+                            Some(da_commitment_scheme),
+                            true,
+                        );
+                    let elf_path = get_zksync_os_sym_path(&app);
+                    Self::run_block_generate_witness_zisk(zisk_oracle, elf_path.to_str().unwrap())
+                };
+
+                #[cfg(not(feature = "zisk-witness"))]
                 let result = Self::run_block_generate_witness::<false>(oracle, &app);
+
                 let mut file = File::create(&path).expect("should create file");
                 let witness: Vec<u8> = result.iter().flat_map(|x| x.to_be_bytes()).collect();
                 let hex = hex::encode(witness);
