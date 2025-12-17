@@ -48,6 +48,9 @@ pub struct ZkEENonDeterminismSource<M: MemorySource> {
     iterator_len_to_indicate: Option<u32>,
     high_half: Option<u32>,
     is_connected_to_external_oracle: bool,
+    /// Flag to ignore the next write(0) from CSRRW side effect after response is complete.
+    /// CSRRW always writes, so after reading the last response value, we get a spurious write(0).
+    ignore_next_zero_write: bool,
     /// Vector of different processors that are responsible for handling queries.
     processors: Vec<Box<dyn OracleQueryProcessor<M> + 'static>>,
     /// Mapping from query_id to processor that is handling it (represented as index in processors vector above).
@@ -63,6 +66,7 @@ impl<M: MemorySource> Default for ZkEENonDeterminismSource<M> {
             iterator_len_to_indicate: None,
             high_half: None,
             is_connected_to_external_oracle: false,
+            ignore_next_zero_write: false,
             processors: Vec::new(),
             ranges: BTreeMap::new(),
         }
@@ -119,11 +123,20 @@ impl<M: MemorySource> ZkEENonDeterminismSource<M> {
         }
 
         if let Some(iterator_len_to_indicate) = self.iterator_len_to_indicate.take() {
+            // If there's no iterator (empty response), set flag to ignore the spurious write(0)
+            if self.current_iterator.is_none() {
+                self.ignore_next_zero_write = true;
+            }
             return iterator_len_to_indicate;
         }
 
         // This is the 32 bits remaining from the previous item - return them now.
         if let Some(high) = self.high_half.take() {
+            // If this was the last value (iterator already consumed), set flag to ignore
+            // the spurious write(0) from csrrw that follows this read.
+            if self.current_iterator.is_none() {
+                self.ignore_next_zero_write = true;
+            }
             return high;
         }
         // If we didn't have any partial data left, we should fetch another element from the iterator.
@@ -146,6 +159,22 @@ impl<M: MemorySource> ZkEENonDeterminismSource<M> {
     }
 
     fn write_impl(&mut self, memory: &M, value: u32) {
+        // CSRRW instruction always writes to CSR, even when "reading".
+        // When the guest does `csrrw rd, 0x7c0, x0` to read, it also writes x0=0.
+        // We need to ignore these spurious write(0) operations when we're in the
+        // middle of returning a response (indicated by any of these being set).
+        if value == 0
+            && (self.iterator_len_to_indicate.is_some()
+                || self.current_iterator.is_some()
+                || self.high_half.is_some()
+                || self.ignore_next_zero_write)
+        {
+            // Ignore spurious write(0) from csrrw read operation
+            self.ignore_next_zero_write = false;
+            return;
+        }
+        self.ignore_next_zero_write = false;
+
         if self.current_query_id.is_some() {
             println!(
                 "Current query ID = 0x{:08x} iterator is not consumed in full, but received value 0x{:08x}",
