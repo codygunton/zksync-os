@@ -24,6 +24,11 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
+
+#[cfg(feature = "zisk-witness")]
+use crate::zisk_bridge::ZiskOracleBridge;
+#[cfg(feature = "zisk-witness")]
+use oracle_provider::DummyMemorySource;
 use zk_ee::common_structs::da_commitment_scheme::DACommitmentScheme;
 use zk_ee::common_structs::{derive_flat_storage_key, ProofData};
 use zk_ee::system::metadata::zk_metadata::{BlockHashes, BlockMetadataFromOracle};
@@ -230,6 +235,53 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
 
         let result = items.borrow().clone();
         result
+    }
+
+    /// Generate witness using Zisk emulator (64-bit).
+    ///
+    /// This uses the Zisk emulator instead of airbender (32-bit) to generate
+    /// the witness. The witness will be compatible with 64-bit Zisk execution.
+    #[cfg(feature = "zisk-witness")]
+    pub fn run_block_generate_witness_zisk(
+        oracle: ZkEENonDeterminismSource<DummyMemorySource>,
+        elf_path: &str,
+    ) -> Vec<u32> {
+        use log::info;
+        use ziskemu::{EmuOptions, Emulator, ZiskEmulator};
+
+        info!("Generating witness using Zisk emulator: {}", elf_path);
+
+        // Create the bridge that wraps the oracle and captures reads
+        let bridge = ZiskOracleBridge::new(oracle);
+        let witness_ref = bridge.get_witness();
+        let oracle_callback = bridge.into_callback();
+
+        // Create emulator options
+        let options = EmuOptions {
+            elf: Some(elf_path.to_string()),
+            verbose: true,
+            ..Default::default()
+        };
+
+        // Run the emulator using the ZiskEmulator interface
+        let emulator = ZiskEmulator;
+        let result = emulator.emulate(
+            &options,
+            None::<Box<dyn Fn(ziskemu::EmuTrace)>>,
+            Some(oracle_callback),
+        );
+
+        match result {
+            Ok(_output) => {
+                // Extract and return the captured witness
+                let witness = witness_ref.lock().expect("witness lock").clone();
+                info!("Generated witness with {} u32 values", witness.len());
+                witness
+            }
+            Err(e) => {
+                panic!("Zisk emulator failed: {:?}", e);
+            }
+        }
     }
 
     ///

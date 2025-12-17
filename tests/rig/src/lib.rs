@@ -12,6 +12,9 @@ pub mod chain;
 pub mod testing_utils;
 pub mod utils;
 
+#[cfg(feature = "zisk-witness")]
+pub mod zisk_bridge;
+
 pub use alloy;
 pub use alloy_rlp;
 pub use alloy_sol_types;
