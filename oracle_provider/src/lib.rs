@@ -106,6 +106,7 @@ impl<M: MemorySource> ZkEENonDeterminismSource<M> {
             let new_iterator = processor.process_buffered_query(query_id, buffer, memory);
 
             let result_len = new_iterator.len() * 2; // NOTE for mismatch of 32/64-bit archs
+            eprintln!("[oracle] query 0x{:08x} response_len={} (u64s={})", query_id, result_len, new_iterator.len());
             self.iterator_len_to_indicate = Some(result_len as u32);
             if result_len > 0 {
                 self.current_query_id = Some(query_id);
@@ -203,6 +204,7 @@ impl<M: MemorySource> ZkEENonDeterminismSource<M> {
         if let Some(query_buffer) = self.query_buffer.as_mut() {
             let complete = query_buffer.write(value);
             if complete {
+                eprintln!("[oracle] query 0x{:08x} complete, processing...", query_buffer.query_type);
                 self.process_buffered_query(memory);
             }
         } else {
@@ -211,6 +213,7 @@ impl<M: MemorySource> ZkEENonDeterminismSource<M> {
                 return;
             }
 
+            eprintln!("[oracle] starting new query 0x{:08x}", value);
             let new_buffer = QueryBuffer::empty_for_query_type(value);
             self.query_buffer = Some(new_buffer);
         }

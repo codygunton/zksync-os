@@ -529,6 +529,19 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
             )
         };
 
+        // For zisk-witness, create oracle BEFORE forward run
+        // (the oracle and proof_data must use matching pre-forward-run state)
+        #[cfg(feature = "zisk-witness")]
+        let zisk_oracle: ZkEENonDeterminismSource<DummyMemorySource> = oracle_factory.create_oracle(
+            block_metadata,
+            self.state_tree.clone(),
+            self.preimage_source.clone(),
+            tx_source.clone(),
+            Some(proof_data),
+            Some(da_commitment_scheme),
+            true,
+        );
+
         // forward run
         let mut result_keeper = ForwardRunningResultKeeper::new(NoopTxCallback);
 
@@ -594,17 +607,6 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
             if let Some(path) = witness_output_file {
                 #[cfg(feature = "zisk-witness")]
                 let result = {
-                    // Create oracle with DummyMemorySource for Zisk
-                    let zisk_oracle: ZkEENonDeterminismSource<DummyMemorySource> =
-                        oracle_factory.create_oracle(
-                            block_metadata,
-                            self.state_tree.clone(),
-                            self.preimage_source.clone(),
-                            tx_source.clone(),
-                            Some(proof_data),
-                            Some(da_commitment_scheme),
-                            true,
-                        );
                     let elf_path = get_zksync_os_sym_path(&app);
                     Self::run_block_generate_witness_zisk(zisk_oracle, elf_path.to_str().unwrap())
                 };

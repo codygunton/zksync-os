@@ -55,6 +55,8 @@ if $USE_ZISK; then
     echo ""
     echo "=== Generating witness using Zisk emulator ==="
     cd "$REPO_ROOT/tests/instances/eth_runner"
+    # Intel oneAPI library path needed for liomp5 linker dependency
+    LIBRARY_PATH="/opt/intel/oneapi/compiler/2025.0/lib:${LIBRARY_PATH:-}" \
     RUST_LOG=eth_runner=info,rig=info cargo run --release \
         --features rig/no_print,rig/unlimited_native,rig/zisk-witness -- \
         single-run --block-dir "$BLOCK_DIR" --randomized --witness-output-dir "$WITNESS_DIR"

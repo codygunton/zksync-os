@@ -2,17 +2,31 @@
 //!
 //! This module provides the glue to run Zisk emulator with zksync-os's oracle
 //! for 64-bit witness generation.
+//!
+//! The key challenge is that `ZkEENonDeterminismSource` uses a 32-bit protocol:
+//! - Returns u32 values from read()
+//! - Reports response lengths in terms of u32 counts
+//! - Returns 64-bit values as pairs of u32 (low, then high)
+//!
+//! But Zisk (64-bit) expects:
+//! - 64-bit values from CSR reads
+//! - The guest reads 64-bit usizes directly
+//!
+//! This bridge combines pairs of u32 reads into u64 for the 64-bit guest.
 
 use oracle_provider::{DummyMemorySource, ZkEENonDeterminismSource};
 use risc_v_simulator::abstractions::non_determinism::NonDeterminismCSRSource;
 use std::cell::UnsafeCell;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// Counter for oracle operations (for debugging)
+static ORACLE_OP_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Bridge between ZkEENonDeterminismSource and Zisk's oracle callback interface.
 ///
 /// This struct wraps the oracle and captures all reads into a witness vector.
-/// It uses `UnsafeCell` for interior mutability because the oracle is not Send
-/// but we know the execution is single-threaded.
+/// It combines pairs of u32 reads from the oracle into u64 values for 64-bit Zisk.
 ///
 /// # Safety
 /// This bridge MUST only be used from a single thread. The `Send` impl is only
@@ -52,6 +66,11 @@ impl ZiskOracleBridge {
         let oracle = unsafe { &mut *self.oracle.get() };
         let value = oracle.read();
         self.witness.lock().expect("witness lock poisoned").push(value);
+        let count = ORACLE_OP_COUNT.fetch_add(1, Ordering::Relaxed);
+        // Log every 100000 operations to track progress
+        if count % 100000 == 0 {
+            eprintln!("[oracle] op={} read -> 0x{:08x}", count, value);
+        }
         value
     }
 
@@ -64,6 +83,11 @@ impl ZiskOracleBridge {
     pub fn write(&self, value: u32) {
         // Safety: single-threaded access guaranteed by caller
         let oracle = unsafe { &mut *self.oracle.get() };
+        let count = ORACLE_OP_COUNT.fetch_add(1, Ordering::Relaxed);
+        // Log writes that look like query IDs (high nibble 0x4) or every 100000 ops
+        if (value & 0xF0000000) == 0x40000000 || count % 100000 == 0 {
+            eprintln!("[oracle] op={} write 0x{:08x}", count, value);
+        }
         oracle.write_with_memory_access(&DummyMemorySource, value);
     }
 
