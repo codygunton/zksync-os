@@ -18,7 +18,13 @@ use oracle_provider::{DummyMemorySource, ZkEENonDeterminismSource};
 use risc_v_simulator::abstractions::non_determinism::NonDeterminismCSRSource;
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// Cached check for ZISK_QUIET env var (suppresses per-operation logging)
+fn is_quiet() -> bool {
+    static QUIET: OnceLock<bool> = OnceLock::new();
+    *QUIET.get_or_init(|| std::env::var("ZISK_QUIET").is_ok())
+}
 
 /// Counter for oracle operations (for debugging)
 static ORACLE_OP_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -67,8 +73,8 @@ impl ZiskOracleBridge {
         let value = oracle.read();
         self.witness.lock().expect("witness lock poisoned").push(value);
         let count = ORACLE_OP_COUNT.fetch_add(1, Ordering::Relaxed);
-        // Log every 100000 operations to track progress
-        if count % 100000 == 0 {
+        // Log every 100000 operations to track progress (suppressed by ZISK_QUIET=1)
+        if count % 100000 == 0 && !is_quiet() {
             eprintln!("[oracle] op={} read -> 0x{:08x}", count, value);
         }
         value
@@ -85,7 +91,8 @@ impl ZiskOracleBridge {
         let oracle = unsafe { &mut *self.oracle.get() };
         let count = ORACLE_OP_COUNT.fetch_add(1, Ordering::Relaxed);
         // Log writes that look like query IDs (high nibble 0x4) or every 100000 ops
-        if (value & 0xF0000000) == 0x40000000 || count % 100000 == 0 {
+        // Suppressed by ZISK_QUIET=1
+        if !is_quiet() && ((value & 0xF0000000) == 0x40000000 || count % 100000 == 0) {
             eprintln!("[oracle] op={} write 0x{:08x}", count, value);
         }
         oracle.write_with_memory_access(&DummyMemorySource, value);
