@@ -7,7 +7,53 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use zk_ee::oracle::query_ids::{DISCONNECT_ORACLE_QUERY_ID, UART_QUERY_ID};
+
+/// Thread-local storage for the guest's current program counter.
+/// Simulators should set this before making oracle calls so we can track
+/// which code location triggers each query.
+static CURRENT_GUEST_PC: AtomicU64 = AtomicU64::new(0);
+
+/// Set the current guest PC (called by simulator before oracle operations)
+pub fn set_guest_pc(pc: u64) {
+    CURRENT_GUEST_PC.store(pc, Ordering::Relaxed);
+}
+
+/// Get the current guest PC (called internally when logging queries)
+fn get_guest_pc() -> u64 {
+    CURRENT_GUEST_PC.load(Ordering::Relaxed)
+}
+
+/// Query ID names for logging
+fn query_id_name(id: u32) -> String {
+    match id {
+        UART_QUERY_ID => "UART".to_string(),
+        DISCONNECT_ORACLE_QUERY_ID => "DISCONNECT".to_string(),
+        0x40030000 => "INITIAL_STORAGE_SLOT".to_string(),
+        0x40030001 => "STORAGE_READ".to_string(),
+        0x4002f000 => "FLAT_STORAGE_PREIMAGE".to_string(),
+        0x40040001 => "MERKLE_PATH".to_string(),
+        0x40040002 => "MERKLE_PATH_PUBDATA".to_string(),
+        0x4004f001 => "FLAT_PREVIOUS_INDEX".to_string(),
+        0x4004f002 => "FLAT_EXACT_INDEX".to_string(),
+        0x40070000 => "ZK_PROOF_DATA_INIT".to_string(),
+        0x40070001 => "ZK_PROOF_DATA_INIT_OLD".to_string(),
+        0x40070002 => "PROOF_FOR_INDEX".to_string(),
+        0x40050001 => "TX_DATA".to_string(),
+        0x40050002 => "TX_SIZE".to_string(),
+        0x40060000 => "NEXT_TX_SIZE".to_string(),
+        0x40060001 => "BLOCK_METADATA".to_string(),
+        0x40060002 => "BLOCK_HASHES".to_string(),
+        0x40060003 => "TX_CONTENT".to_string(),
+        id => format!("0x{:08x}", id),
+    }
+}
+
+/// Environment variable to enable verbose query logging
+fn verbose_query_logging() -> bool {
+    std::env::var("VERBOSE_ORACLE").is_ok()
+}
 use zk_ee::oracle::usize_serialization::{UsizeDeserializable, UsizeSerializable};
 use zk_ee::system::errors::internal::InternalError;
 use zk_ee::{internal_error, oracle::IOOracle};
@@ -55,6 +101,31 @@ pub struct ZkEENonDeterminismSource<M: MemorySource> {
     processors: Vec<Box<dyn OracleQueryProcessor<M> + 'static>>,
     /// Mapping from query_id to processor that is handling it (represented as index in processors vector above).
     ranges: BTreeMap<u32, usize>,
+    /// Count of oracle queries made (total).
+    query_count: usize,
+    /// Count of queries by query_id for analysis.
+    query_counts: BTreeMap<u32, usize>,
+    /// Current transaction index (inferred from NEXT_TX_SIZE queries)
+    current_tx_index: usize,
+    /// Detailed query log for debugging
+    query_log: Vec<QueryLogEntry>,
+}
+
+/// Log entry for detailed query analysis
+#[derive(Clone, Debug)]
+pub struct QueryLogEntry {
+    pub query_num: usize,
+    pub tx_index: usize,
+    pub query_id: u32,
+    pub query_name: String,
+    pub input_len: usize,
+    pub response_len: usize,
+    /// First few words of input for context
+    pub input_preview: Vec<usize>,
+    /// First few words of response for context (especially useful for NEXT_TX_SIZE)
+    pub response_preview: Vec<usize>,
+    /// Guest program counter when query was made (0 if not available)
+    pub guest_pc: u64,
 }
 
 impl<M: MemorySource> Default for ZkEENonDeterminismSource<M> {
@@ -69,11 +140,134 @@ impl<M: MemorySource> Default for ZkEENonDeterminismSource<M> {
             ignore_next_zero_write: false,
             processors: Vec::new(),
             ranges: BTreeMap::new(),
+            query_count: 0,
+            query_counts: BTreeMap::new(),
+            current_tx_index: 0,
+            query_log: Vec::new(),
         }
     }
 }
 
 impl<M: MemorySource> ZkEENonDeterminismSource<M> {
+    /// Returns the total number of oracle queries made.
+    pub fn query_count(&self) -> usize {
+        self.query_count
+    }
+
+    /// Returns the query counts by query type.
+    pub fn get_query_counts(&self) -> &BTreeMap<u32, usize> {
+        &self.query_counts
+    }
+
+    /// Prints a summary of all oracle queries made.
+    pub fn print_query_summary(&self) {
+        eprintln!("\n[ORACLE] Query breakdown by type:");
+        let mut total = 0usize;
+        let mut non_uart = 0usize;
+        for (qid, count) in &self.query_counts {
+            total += count;
+            if *qid != UART_QUERY_ID {
+                non_uart += count;
+            }
+            eprintln!("  {}: {} queries", query_id_name(*qid), count);
+        }
+        eprintln!("[ORACLE] Total queries: {} (non-UART: {})", total, non_uart);
+        eprintln!("[ORACLE] Transactions processed: {}", self.current_tx_index);
+    }
+
+    /// Returns the detailed query log
+    pub fn get_query_log(&self) -> &[QueryLogEntry] {
+        &self.query_log
+    }
+
+    /// Prints detailed query log (for debugging)
+    pub fn print_detailed_log(&self) {
+        eprintln!("\n[ORACLE] Detailed query log ({} queries):", self.query_log.len());
+        for entry in &self.query_log {
+            eprintln!(
+                "  [{}] tx={} pc=0x{:x} {} input_len={} response_len={} input={:x?}",
+                entry.query_num,
+                entry.tx_index,
+                entry.guest_pc,
+                entry.query_name,
+                entry.input_len,
+                entry.response_len,
+                entry.input_preview
+            );
+        }
+    }
+
+    /// Prints queries grouped by transaction
+    pub fn print_queries_by_tx(&self) {
+        eprintln!("\n[ORACLE] Queries by transaction:");
+        let mut current_tx = 0;
+        let mut tx_queries: BTreeMap<String, usize> = BTreeMap::new();
+
+        for entry in &self.query_log {
+            if entry.tx_index != current_tx {
+                // Print summary for previous tx
+                if !tx_queries.is_empty() {
+                    eprintln!("  TX {}: {:?}", current_tx, tx_queries);
+                }
+                current_tx = entry.tx_index;
+                tx_queries.clear();
+            }
+            *tx_queries.entry(entry.query_name.clone()).or_insert(0) += 1;
+        }
+        // Print last tx
+        if !tx_queries.is_empty() {
+            eprintln!("  TX {}: {:?}", current_tx, tx_queries);
+        }
+    }
+
+    /// Dumps detailed query log to a file for comparison/diffing
+    pub fn dump_query_log_to_file(&self, path: &str) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut file = std::fs::File::create(path)?;
+
+        writeln!(file, "# Oracle Query Log")?;
+        writeln!(file, "# Total queries: {}", self.query_count)?;
+        writeln!(file, "# Transactions: {}", self.current_tx_index)?;
+        writeln!(file, "#")?;
+        writeln!(file, "# Format: query_num,tx_index,guest_pc,query_name,input_len,response_len,input_preview")?;
+        writeln!(file, "#")?;
+
+        for entry in &self.query_log {
+            writeln!(
+                file,
+                "{},{},0x{:x},{},{},{},{:x?}",
+                entry.query_num,
+                entry.tx_index,
+                entry.guest_pc,
+                entry.query_name,
+                entry.input_len,
+                entry.response_len,
+                entry.input_preview
+            )?;
+        }
+
+        // Also write per-tx summary at the end
+        writeln!(file, "\n# Per-transaction summary:")?;
+        let mut current_tx = 0;
+        let mut tx_queries: BTreeMap<String, usize> = BTreeMap::new();
+
+        for entry in &self.query_log {
+            if entry.tx_index != current_tx {
+                if !tx_queries.is_empty() {
+                    writeln!(file, "# TX {}: {:?}", current_tx, tx_queries)?;
+                }
+                current_tx = entry.tx_index;
+                tx_queries.clear();
+            }
+            *tx_queries.entry(entry.query_name.clone()).or_insert(0) += 1;
+        }
+        if !tx_queries.is_empty() {
+            writeln!(file, "# TX {}: {:?}", current_tx, tx_queries)?;
+        }
+
+        Ok(())
+    }
+
     #[track_caller]
     pub fn add_external_processor<P: OracleQueryProcessor<M> + 'static>(&mut self, processor: P) {
         let query_ids = processor.supported_query_ids();
@@ -95,22 +289,80 @@ impl<M: MemorySource> ZkEENonDeterminismSource<M> {
 
         let buffer = self.query_buffer.take().expect("must exist");
         let query_id = buffer.query_type;
+
+        // Track query counts
+        self.query_count += 1;
+        *self.query_counts.entry(query_id).or_insert(0) += 1;
+
+        // Track transaction boundaries (NEXT_TX_SIZE signals start of new tx processing)
+        if query_id == 0x40060000 {
+            // NEXT_TX_SIZE query indicates we're starting to process a new transaction
+            self.current_tx_index += 1;
+        }
+
         if query_id == DISCONNECT_ORACLE_QUERY_ID {
+            // Print query summary on disconnect
+            self.print_query_summary();
+            // Print detailed log if verbose mode
+            if verbose_query_logging() {
+                self.print_queries_by_tx();
+            }
             self.is_connected_to_external_oracle = false;
         } else {
-            let buffer = buffer.buffer;
+            let input_buffer = buffer.buffer;
+            let input_len = input_buffer.len();
+            let input_preview: Vec<usize> = input_buffer.iter().take(4).copied().collect();
+
             let Some(processor_id) = self.ranges.get(&query_id).copied() else {
                 panic!("Can not process query with ID = 0x{query_id:08x}");
             };
             let processor = &mut self.processors[processor_id];
-            let new_iterator = processor.process_buffered_query(query_id, buffer, memory);
+            let new_iterator = processor.process_buffered_query(query_id, input_buffer, memory);
 
-            let result_len = new_iterator.len() * 2; // NOTE for mismatch of 32/64-bit archs
-            eprintln!("[oracle] query 0x{:08x} response_len={} (u64s={})", query_id, result_len, new_iterator.len());
+            // Collect iterator to peek at response values, then wrap back as iterator
+            let response_vec: Vec<usize> = new_iterator.collect();
+            let response_preview: Vec<usize> = response_vec.iter().take(4).copied().collect();
+            let result_len = response_vec.len() * 2; // NOTE for mismatch of 32/64-bit archs
+
+            // Log query details
+            let query_name = query_id_name(query_id);
+            let guest_pc = get_guest_pc();
+
+            // Special logging for NEXT_TX_SIZE to show the transaction size
+            if query_id == 0x40060000 && !response_preview.is_empty() {
+                let tx_size = response_preview[0] as u32;
+                eprintln!(
+                    "[oracle] NEXT_TX_SIZE tx={} size={} bytes{}",
+                    self.current_tx_index,
+                    tx_size,
+                    if tx_size == 0 { " (END OF BLOCK)" } else { "" }
+                );
+            }
+
+            if verbose_query_logging() {
+                eprintln!(
+                    "[oracle] query {} complete, processing... tx={} pc=0x{:x} input_len={} response_len={} (u64s={}) response={:?}",
+                    query_name, self.current_tx_index, guest_pc, input_len, result_len, response_vec.len(), response_preview
+                );
+            }
+
+            // Store in detailed log
+            self.query_log.push(QueryLogEntry {
+                query_num: self.query_count,
+                tx_index: self.current_tx_index,
+                query_id,
+                query_name: query_name.clone(),
+                input_len,
+                response_len: result_len,
+                input_preview,
+                response_preview,
+                guest_pc,
+            });
+
             self.iterator_len_to_indicate = Some(result_len as u32);
             if result_len > 0 {
                 self.current_query_id = Some(query_id);
-                self.current_iterator = Some(new_iterator);
+                self.current_iterator = Some(Box::new(response_vec.into_iter()));
             }
         }
     }
@@ -204,7 +456,6 @@ impl<M: MemorySource> ZkEENonDeterminismSource<M> {
         if let Some(query_buffer) = self.query_buffer.as_mut() {
             let complete = query_buffer.write(value);
             if complete {
-                eprintln!("[oracle] query 0x{:08x} complete, processing...", query_buffer.query_type);
                 self.process_buffered_query(memory);
             }
         } else {
@@ -213,7 +464,6 @@ impl<M: MemorySource> ZkEENonDeterminismSource<M> {
                 return;
             }
 
-            eprintln!("[oracle] starting new query 0x{:08x}", value);
             let new_buffer = QueryBuffer::empty_for_query_type(value);
             self.query_buffer = Some(new_buffer);
         }
@@ -321,6 +571,10 @@ impl<M: MemorySource> NonDeterminismCSRSource<M> for ZkEENonDeterminismSource<M>
         // println!("`NonDeterminismCSRSource` received 0x{:08x}", value);
         self.write_impl(memory, value);
     }
+
+    fn set_current_pc(&mut self, pc: u64) {
+        set_guest_pc(pc);
+    }
 }
 
 /// Wraps the original source and remembers all the read accesses.
@@ -352,5 +606,9 @@ impl<M: MemorySource> NonDeterminismCSRSource<M> for ReadWitnessSource<M> {
 
     fn write_with_memory_access(&mut self, memory: &M, value: u32) {
         self.original_source.write_with_memory_access(memory, value);
+    }
+
+    fn set_current_pc(&mut self, pc: u64) {
+        self.original_source.set_current_pc(pc);
     }
 }
