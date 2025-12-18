@@ -63,5 +63,6 @@ multiblock-batch = ["proof_running_system/multiblock-batch"]
 state-diffs-pi = ["proof_running_system/state-diffs-pi"]
 aggregation = ["proof_running_system/aggregation"]
 
-# [patch."https://github.com/matter-labs/zksync-airbender"]
-# blake2s_u32 = {git = "ssh://git@github.com/matter-labs/zksync-airbender.git", branch = "av_bigint_precompile" }
+[patch."https://github.com/matter-labs/zksync-airbender"]
+# Use local blake2s_u32 with riscv64 CSR delegation support
+blake2s_u32 = { path = "zksync-airbender/blake2s_u32" }
