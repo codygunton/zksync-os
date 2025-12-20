@@ -115,18 +115,11 @@ impl<'external, S: EthereumLikeTypes> ExecutionContext<'_, 'external, S> {
     where
         S::IO: IOSubsystemExt,
     {
-        // TODO: debug implementation for ruint types uses global alloc, which panics in ZKsync OS
-        #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
+        // Log external call via UART (requires print_debug_info feature)
         {
-            let _ = self.system.get_logger().write_fmt(format_args!(
-                "External call or deploy to {:?}\n",
-                call_request.callee
-            ));
-
-            let _ = self.system.get_logger().write_fmt(format_args!(
-                "External call with parameters:\n{:?}\n",
-                &call_request,
-            ));
+            use core::fmt::Write;
+            let mut logger = self.system.get_logger();
+            let _ = logger.write_str("[EXT_CALL]\n");
         }
 
         // We begin execution of the requested call in the caller's context. This is necessary
