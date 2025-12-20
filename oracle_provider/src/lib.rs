@@ -639,10 +639,6 @@ impl<M: MemorySource> NonDeterminismCSRSource<M> for ZkEENonDeterminismSource<M>
         // println!("`NonDeterminismCSRSource` received 0x{:08x}", value);
         self.write_impl(memory, value);
     }
-
-    fn set_current_pc(&mut self, pc: u64) {
-        set_guest_pc(pc);
-    }
 }
 
 /// Wraps the original source and remembers all the read accesses.
@@ -674,9 +670,5 @@ impl<M: MemorySource> NonDeterminismCSRSource<M> for ReadWitnessSource<M> {
 
     fn write_with_memory_access(&mut self, memory: &M, value: u32) {
         self.original_source.write_with_memory_access(memory, value);
-    }
-
-    fn set_current_pc(&mut self, pc: u64) {
-        self.original_source.set_current_pc(pc);
     }
 }
