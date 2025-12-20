@@ -54,6 +54,47 @@ fn query_id_name(id: u32) -> String {
 fn verbose_query_logging() -> bool {
     std::env::var("VERBOSE_ORACLE").is_ok()
 }
+
+/// Decode a B160 address from usize values (3 usizes = 24 bytes, first 20 are address)
+fn decode_address_from_usizes(data: &[usize]) -> Option<String> {
+    if data.len() < 3 {
+        return None;
+    }
+    // B160 is stored as 3 u64 limbs in little-endian order (lowest limb first)
+    // We need to reconstruct the big-endian address representation
+    let mut bytes = [0u8; 24];
+    // Store in reverse order to get big-endian representation
+    bytes[16..24].copy_from_slice(&data[0].to_be_bytes());
+    bytes[8..16].copy_from_slice(&data[1].to_be_bytes());
+    bytes[0..8].copy_from_slice(&data[2].to_be_bytes());
+    // Take last 20 bytes for the address (skip first 4 bytes of padding)
+    Some(format!("0x{}", hex::encode(&bytes[4..24])))
+}
+
+/// Decode a Bytes32 (storage key or hash) from usize values (4 usizes = 32 bytes)
+fn decode_bytes32_from_usizes(data: &[usize]) -> Option<String> {
+    if data.len() < 4 {
+        return None;
+    }
+    // Bytes32 is stored as 4 u64 limbs in little-endian order (lowest limb first)
+    // We need to reconstruct the big-endian representation
+    let mut bytes = [0u8; 32];
+    bytes[24..32].copy_from_slice(&data[0].to_be_bytes());
+    bytes[16..24].copy_from_slice(&data[1].to_be_bytes());
+    bytes[8..16].copy_from_slice(&data[2].to_be_bytes());
+    bytes[0..8].copy_from_slice(&data[3].to_be_bytes());
+    Some(format!("0x{}", hex::encode(bytes)))
+}
+
+/// Decode a StorageAddress (address + key) from usize values
+fn decode_storage_address(data: &[usize]) -> Option<(String, String)> {
+    if data.len() < 7 {
+        return None;
+    }
+    let address = decode_address_from_usizes(&data[0..3])?;
+    let key = decode_bytes32_from_usizes(&data[3..7])?;
+    Some((address, key))
+}
 use zk_ee::oracle::usize_serialization::{UsizeDeserializable, UsizeSerializable};
 use zk_ee::system::errors::internal::InternalError;
 use zk_ee::{internal_error, oracle::IOOracle};
@@ -185,10 +226,9 @@ impl<M: MemorySource> ZkEENonDeterminismSource<M> {
         eprintln!("\n[ORACLE] Detailed query log ({} queries):", self.query_log.len());
         for entry in &self.query_log {
             eprintln!(
-                "  [{}] tx={} pc=0x{:x} {} input_len={} response_len={} input={:x?}",
+                "  [{}] tx={} {} input_len={} response_len={} input={:x?}",
                 entry.query_num,
                 entry.tx_index,
-                entry.guest_pc,
                 entry.query_name,
                 entry.input_len,
                 entry.response_len,
@@ -229,16 +269,15 @@ impl<M: MemorySource> ZkEENonDeterminismSource<M> {
         writeln!(file, "# Total queries: {}", self.query_count)?;
         writeln!(file, "# Transactions: {}", self.current_tx_index)?;
         writeln!(file, "#")?;
-        writeln!(file, "# Format: query_num,tx_index,guest_pc,query_name,input_len,response_len,input_preview")?;
+        writeln!(file, "# Format: query_num,tx_index,query_name,input_len,response_len,input_preview")?;
         writeln!(file, "#")?;
 
         for entry in &self.query_log {
             writeln!(
                 file,
-                "{},{},0x{:x},{},{},{},{:x?}",
+                "{},{},{},{},{},{:x?}",
                 entry.query_num,
                 entry.tx_index,
-                entry.guest_pc,
                 entry.query_name,
                 entry.input_len,
                 entry.response_len,
@@ -313,6 +352,26 @@ impl<M: MemorySource> ZkEENonDeterminismSource<M> {
             let input_len = input_buffer.len();
             let input_preview: Vec<usize> = input_buffer.iter().take(4).copied().collect();
 
+            // Log detailed query info for storage queries (always, to help debug divergence)
+            // INITIAL_STORAGE_SLOT = 0x40030000
+            if query_id == 0x40030000 {
+                if let Some((address, key)) = decode_storage_address(&input_buffer) {
+                    eprintln!(
+                        "[oracle] INITIAL_STORAGE_SLOT tx={} address={} key={}",
+                        self.current_tx_index, address, key
+                    );
+                }
+            }
+            // FLAT_STORAGE_PREIMAGE = 0x4002f000
+            if query_id == 0x4002f000 {
+                if let Some(hash) = decode_bytes32_from_usizes(&input_buffer) {
+                    eprintln!(
+                        "[oracle] FLAT_STORAGE_PREIMAGE tx={} hash={}",
+                        self.current_tx_index, hash
+                    );
+                }
+            }
+
             let Some(processor_id) = self.ranges.get(&query_id).copied() else {
                 panic!("Can not process query with ID = 0x{query_id:08x}");
             };
@@ -341,8 +400,8 @@ impl<M: MemorySource> ZkEENonDeterminismSource<M> {
 
             if verbose_query_logging() {
                 eprintln!(
-                    "[oracle] query {} complete, processing... tx={} pc=0x{:x} input_len={} response_len={} (u64s={}) response={:?}",
-                    query_name, self.current_tx_index, guest_pc, input_len, result_len, response_vec.len(), response_preview
+                    "[oracle] query {} complete, processing... tx={} input_len={} response_len={} (u64s={}) response={:?}",
+                    query_name, self.current_tx_index, input_len, result_len, response_vec.len(), response_preview
                 );
             }
 
@@ -412,6 +471,15 @@ impl<M: MemorySource> ZkEENonDeterminismSource<M> {
     }
 
     fn write_impl(&mut self, memory: &M, value: u32) {
+        // Debug: log all non-zero writes and check for UART marker
+        if value != 0 {
+            static WRITE_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let count = WRITE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if count < 50 || value == UART_QUERY_ID {
+                eprintln!("[ORACLE DEBUG] write #{}: 0x{:08x} (UART={})", count, value, value == UART_QUERY_ID);
+            }
+        }
+
         // CSRRW instruction always writes to CSR, even when "reading".
         // When the guest does `csrrw rd, 0x7c0, x0` to read, it also writes x0=0.
         // We need to ignore these spurious write(0) operations when we're in the
