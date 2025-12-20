@@ -26,7 +26,8 @@ zksync_os_api = { path = "../../api" }
 zksync_os_interface = { workspace = true, default-features = false }
 
 # Optional zisk emulator for 64-bit witness generation
-ziskemu = { path = "../../../zisk/emulator", optional = true }
+# Path relative to this file: zksync-os/tests/rig -> zisk repo root
+ziskemu = { path = "../../../emulator", optional = true }
 
 prover_examples = { workspace = true, optional=true}
 

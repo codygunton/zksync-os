@@ -257,9 +257,11 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
         let oracle_callback = bridge.into_callback();
 
         // Create emulator options
+        // Enable UART output to stderr so we can see guest logs
         let options = EmuOptions {
             elf: Some(elf_path.to_string()),
             verbose: true,
+            uart: "stderr".to_string(),
             ..Default::default()
         };
 
