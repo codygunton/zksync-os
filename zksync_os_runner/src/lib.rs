@@ -60,7 +60,6 @@ pub fn run_and_get_effective_cycles(
     cycles: usize,
     non_determinism_source: impl NonDeterminismCSRSource<VectorMemoryImpl>,
 ) -> ([u32; 8], Option<u64>) {
-    println!("ZK RISC-V simulator is starting");
 
     // Check that the bin file is present and readable.
     let mut file = std::fs::File::open(img_path.clone())
@@ -105,7 +104,6 @@ pub fn simulate_witness_tracing(
     img_path: PathBuf,
     non_determinism_source: impl NonDeterminismCSRSource<VectorMemoryImplWithRom>,
 ) {
-    println!("ZK RISC-V simulator is starting");
 
     // Check that the bin file is present and readable.
     let mut file = std::fs::File::open(img_path.clone())

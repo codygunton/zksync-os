@@ -260,7 +260,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
         // Enable UART output to stderr so we can see guest logs
         let options = EmuOptions {
             elf: Some(elf_path.to_string()),
-            verbose: true,
+            verbose: false,  // Keep quiet for cleaner logs (set to true for debugging)
             uart: "stderr".to_string(),
             ..Default::default()
         };

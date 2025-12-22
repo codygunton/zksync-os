@@ -398,7 +398,8 @@ impl<M: MemorySource> ZkEENonDeterminismSource<M> {
                 );
             }
 
-            if verbose_query_logging() {
+            // Log query completion (skip UART queries as they're noisy and content is printed by guest)
+            if verbose_query_logging() && query_id != UART_QUERY_ID {
                 eprintln!(
                     "[oracle] query {} complete, processing... tx={} input_len={} response_len={} (u64s={}) response={:?}",
                     query_name, self.current_tx_index, input_len, result_len, response_vec.len(), response_preview
@@ -471,18 +472,11 @@ impl<M: MemorySource> ZkEENonDeterminismSource<M> {
     }
 
     fn write_impl(&mut self, memory: &M, value: u32) {
-        // Debug: log all non-zero writes and check for UART marker
-        if value != 0 {
+        // Debug: log writes only when verbose oracle is enabled
+        if value != 0 && verbose_query_logging() {
             static WRITE_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let count = WRITE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if count < 50 || value == UART_QUERY_ID {
-                eprintln!(
-                    "[ORACLE DEBUG] write #{}: 0x{:08x}",
-                    count,
-                    value,
-                    value == UART_QUERY_ID
-                );
-            }
+            eprintln!("[ORACLE DEBUG] write #{}: 0x{:08x}", count, value);
         }
 
         // CSRRW instruction always writes to CSR, even when "reading".

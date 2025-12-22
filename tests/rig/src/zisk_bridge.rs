@@ -141,10 +141,10 @@ impl ZiskOracleBridge {
             self.remaining_u32s.store(length as u32, Ordering::SeqCst);
             if verbose_bridge() {
                 let query_num = QUERY_OP_COUNT.load(Ordering::Relaxed);
-                eprintln!(
-                    "[bridge] query={} read_u64 LENGTH: {} (will track {} u32 reads)",
-                    query_num, length, length
-                );
+                // eprintln!(
+                //     "[bridge] query={} read_u64 LENGTH: {} (will track {} u32 reads)",
+                //     query_num, length, length
+                // );
             }
             length
         } else {
@@ -161,10 +161,10 @@ impl ZiskOracleBridge {
             if verbose_bridge() && remaining_before <= 8 {
                 // Log last few data reads to see values at end of response
                 let query_num = QUERY_OP_COUNT.load(Ordering::Relaxed);
-                eprintln!(
-                    "[bridge] query={} read_u64 DATA: remaining {} -> {}, value=0x{:08x}",
-                    query_num, remaining_before, new_remaining, value
-                );
+                // eprintln!(
+                //     "[bridge] query={} read_u64 DATA: remaining {} -> {}, value=0x{:08x}",
+                //     query_num, remaining_before, new_remaining, value
+                // );
             }
             value
         }
@@ -183,10 +183,11 @@ impl ZiskOracleBridge {
     /// Must only be called from a single thread.
     fn write_u64(&self, val: u64) {
         // Debug: log first 100 writes to see if UART marker appears
-        static BRIDGE_WRITE_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        static BRIDGE_WRITE_COUNT: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
         let count = BRIDGE_WRITE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if count < 100 || val == 0xFFFFFFFF {
-            eprintln!("[BRIDGE DEBUG] write_u64 #{}: 0x{:016x} (low32=0x{:08x})", count, val, val as u32);
+            // eprintln!("[BRIDGE DEBUG] write_u64 #{}: 0x{:016x} (low32=0x{:08x})", count, val, val as u32);
         }
 
         // The CSRRW instruction writes x0=0 when reading, causing spurious writes.
@@ -211,10 +212,7 @@ impl ZiskOracleBridge {
         if is_query_id {
             let query_num = QUERY_OP_COUNT.fetch_add(1, Ordering::Relaxed);
             if verbose_bridge() {
-                eprintln!(
-                    "[bridge] query={} NEW QUERY ID: 0x{:08x}",
-                    query_num + 1, val
-                );
+                eprintln!("[bridge] query={} NEW QUERY ID: 0x{:08x}", query_num + 1, val);
             }
         }
 
