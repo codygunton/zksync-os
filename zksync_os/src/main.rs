@@ -205,6 +205,8 @@ unsafe fn workload() -> ! {
 
     use core::fmt::Write;
     let _ =
+        LoggerTy::default().write_fmt(format_args!("PROOF IT WORKS\n"));
+    let _ =
         LoggerTy::default().write_fmt(format_args!("Entry routine is done, moving into payload\n"));
 
 

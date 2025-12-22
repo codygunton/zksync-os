@@ -269,7 +269,10 @@ impl<M: MemorySource> ZkEENonDeterminismSource<M> {
         writeln!(file, "# Total queries: {}", self.query_count)?;
         writeln!(file, "# Transactions: {}", self.current_tx_index)?;
         writeln!(file, "#")?;
-        writeln!(file, "# Format: query_num,tx_index,query_name,input_len,response_len,input_preview")?;
+        writeln!(
+            file,
+            "# Format: query_num,tx_index,query_name,input_len,response_len,input_preview"
+        )?;
         writeln!(file, "#")?;
 
         for entry in &self.query_log {
@@ -313,10 +316,7 @@ impl<M: MemorySource> ZkEENonDeterminismSource<M> {
         let processor_id = self.processors.len();
         for id in query_ids.into_iter() {
             let existing = self.ranges.insert(id, processor_id);
-            assert!(
-                existing.is_none(),
-                "more than one processor for query id 0x{id:08x}"
-            );
+            assert!(existing.is_none(), "more than one processor for query id 0x{id:08x}");
         }
         self.processors.push(Box::new(processor));
         self.is_connected_to_external_oracle = true;
@@ -476,7 +476,12 @@ impl<M: MemorySource> ZkEENonDeterminismSource<M> {
             static WRITE_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let count = WRITE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if count < 50 || value == UART_QUERY_ID {
-                eprintln!("[ORACLE DEBUG] write #{}: 0x{:08x} (UART={})", count, value, value == UART_QUERY_ID);
+                eprintln!(
+                    "[ORACLE DEBUG] write #{}: 0x{:08x}",
+                    count,
+                    value,
+                    value == UART_QUERY_ID
+                );
             }
         }
 
@@ -590,12 +595,7 @@ struct QueryBuffer {
 
 impl QueryBuffer {
     fn empty_for_query_type(query_type: u32) -> Self {
-        Self {
-            query_type,
-            remaining_len: None,
-            write_low: true,
-            buffer: Vec::new(),
-        }
+        Self { query_type, remaining_len: None, write_low: true, buffer: Vec::new() }
     }
 
     fn write(&mut self, value: u32) -> bool {
@@ -649,10 +649,7 @@ pub struct ReadWitnessSource<M: MemorySource> {
 
 impl<M: MemorySource> ReadWitnessSource<M> {
     pub fn new(original_source: ZkEENonDeterminismSource<M>) -> Self {
-        Self {
-            original_source,
-            read_items: Rc::new(RefCell::new(vec![])),
-        }
+        Self { original_source, read_items: Rc::new(RefCell::new(vec![])) }
     }
 
     pub fn get_read_items(&self) -> Rc<RefCell<Vec<u32>>> {
