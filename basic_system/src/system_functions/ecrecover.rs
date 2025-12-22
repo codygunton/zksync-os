@@ -23,11 +23,9 @@ impl<R: Resources> SystemFunction<R, Secp256k1ECRecoverErrors> for EcRecoverImpl
         resources: &mut R,
         _allocator: A,
     ) -> Result<(), SubsystemError<Secp256k1ECRecoverErrors>> {
-        Ok(cycle_marker::wrap_with_resources!(
-            "ecrecover",
-            resources,
-            { ecrecover_as_system_function_inner(input, output, resources) }
-        )?)
+        Ok(cycle_marker::wrap_with_resources!("ecrecover", resources, {
+            ecrecover_as_system_function_inner(input, output, resources)
+        })?)
     }
 }
 
@@ -46,9 +44,46 @@ fn ecrecover_as_system_function_inner<
     ))?;
     // digest, v, r, s in ABI
     let mut buffer = [0u8; 128];
-    for (dst, src) in buffer.iter_mut().zip(src.iter()) {
-        *dst = *src;
+    // for (dst, src) in buffer.iter_mut().zip(src.iter()) {
+    //     *dst = *src;
+    // }
+    // Use volatile writes to prevent compiler optimization issues on riscv64 (???)
+    let mut idx = 0usize;
+    for byte in src.iter() {
+        if idx >= 128 {
+            break;
+        }
+        unsafe {
+            core::ptr::write_volatile(&mut buffer[idx], *byte);
+        }
+        idx += 1;
     }
+
+    // Log r and s values from source and buffer for debugging
+    uart_log::write_str("[ecrecover] src r (bytes 64-95): ");
+    for i in 64..96 {
+        if let Some(b) = src.iter().nth(i) {
+            uart_log::write_hex_byte(*b);
+        }
+    }
+    uart_log::newline();
+    uart_log::write_str("[ecrecover] src s (bytes 96-127): ");
+    for i in 96..128 {
+        if let Some(b) = src.iter().nth(i) {
+            uart_log::write_hex_byte(*b);
+        }
+    }
+    uart_log::newline();
+    uart_log::write_str("[ecrecover] buffer r (bytes 64-95): ");
+    for i in 64..96 {
+        uart_log::write_hex_byte(buffer[i]);
+    }
+    uart_log::newline();
+    uart_log::write_str("[ecrecover] buffer s (bytes 96-127): ");
+    for i in 96..128 {
+        uart_log::write_hex_byte(buffer[i]);
+    }
+    uart_log::newline();
 
     // follow https://github.com/ethereum/go-ethereum/blob/aadcb886753079d419f966a3bc990f708f8d1c3b/core/vm/contracts.go#L188
 
@@ -93,8 +128,8 @@ mod uart_log {
     use arrayvec::ArrayString;
 
     const HELLO_MARKER: u32 = u32::MAX; // 0xffffffff = UART_QUERY_ID
-    // Buffer size: enough for longest log line
-    // "[ecrecover_inner] INPUT: digest=0x" + 64 + ", r=0x" + 64 + ", s=0x" + 64 + ", rec_id=" + 2 + newline
+                                        // Buffer size: enough for longest log line
+                                        // "[ecrecover_inner] INPUT: digest=0x" + 64 + ", r=0x" + 64 + ", s=0x" + 64 + ", rec_id=" + 2 + newline
     const BUF_SIZE: usize = 280;
 
     // Single-threaded guest buffer
@@ -225,7 +260,9 @@ pub fn ecrecover_inner(
     uart_log::newline();
 
     let signature = Signature::from_scalars(*r, *s).map_err(|_| {
-        uart_log::write_str("[ecrecover_inner] OUTPUT: Error - failed to create signature from scalars\n");
+        uart_log::write_str(
+            "[ecrecover_inner] OUTPUT: Error - failed to create signature from scalars\n",
+        );
     })?;
     let recovery_id = RecoveryId::try_from(rec_id).map_err(|_| {
         uart_log::write_str("[ecrecover_inner] OUTPUT: Error - invalid recovery id\n");
@@ -287,10 +324,7 @@ mod test {
         ecrecover_as_system_function_inner(input.as_slice(), &mut pubkey, &mut resources)
             .expect("ecrecover");
         assert_eq!(pubkey.len(), 32, "Size should be 32");
-        assert_eq!(
-            pubkey, expected_pubkey,
-            "pubkey should be equal to reference"
-        )
+        assert_eq!(pubkey, expected_pubkey, "pubkey should be equal to reference")
     }
 
     #[test]
@@ -361,9 +395,6 @@ mod test {
         ecrecover_as_system_function_inner(input.as_slice(), &mut pubkey, &mut resources)
             .expect("ecrecover");
         assert_eq!(pubkey.len(), 32, "Size should be 32");
-        assert_eq!(
-            pubkey, expected_pubkey,
-            "pubkey should be equal to reference"
-        )
+        assert_eq!(pubkey, expected_pubkey, "pubkey should be equal to reference")
     }
 }
