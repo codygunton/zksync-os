@@ -85,6 +85,122 @@ fn ecrecover_as_system_function_inner<
     Ok(())
 }
 
+/// CSR-based QuasiUART for RISC-V guests (both Airbender and Zisk)
+/// Uses CSR 0x7c0 with the QuasiUART protocol for unified logging.
+/// Buffers entire lines to produce clean output with single [GUEST] prefix.
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+mod uart_log {
+    use arrayvec::ArrayString;
+
+    const HELLO_MARKER: u32 = u32::MAX; // 0xffffffff = UART_QUERY_ID
+    // Buffer size: enough for longest log line
+    // "[ecrecover_inner] INPUT: digest=0x" + 64 + ", r=0x" + 64 + ", s=0x" + 64 + ", rec_id=" + 2 + newline
+    const BUF_SIZE: usize = 280;
+
+    // Single-threaded guest buffer
+    static mut LINE_BUF: ArrayString<BUF_SIZE> = ArrayString::new_const();
+
+    #[inline(always)]
+    fn csr_write_word(word: usize) {
+        unsafe {
+            core::arch::asm!(
+                "csrrw x0, 0x7c0, {rd}",
+                rd = in(reg) word,
+                options(nomem, nostack, preserves_flags)
+            )
+        }
+    }
+
+    fn flush_buffer(s: &str) {
+        let len = s.len();
+        if len == 0 {
+            return;
+        }
+        // QuasiUART protocol:
+        // 1. Write HELLO_MARKER (0xffffffff)
+        // 2. Write word count (ceil(len/4) + 1 for length word)
+        // 3. Write message length in bytes
+        // 4. Write message data as 4-byte LE words
+        csr_write_word(HELLO_MARKER as usize);
+        csr_write_word(len.next_multiple_of(4) / 4 + 1);
+        csr_write_word(len);
+
+        // Write bytes in 4-byte words
+        let bytes = s.as_bytes();
+        let mut i = 0;
+        while i + 4 <= len {
+            let word = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+            csr_write_word(word as usize);
+            i += 4;
+        }
+
+        // Flush remaining bytes (padded with zeros)
+        if i < len {
+            let mut buf = [0u8; 4];
+            for j in 0..(len - i) {
+                buf[j] = bytes[i + j];
+            }
+            csr_write_word(u32::from_le_bytes(buf) as usize);
+        }
+    }
+
+    #[inline(never)]
+    pub fn write_str(s: &str) {
+        unsafe {
+            let _ = LINE_BUF.try_push_str(s);
+        }
+    }
+
+    #[inline(never)]
+    pub fn write_hex_byte(byte: u8) {
+        const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+        unsafe {
+            let _ = LINE_BUF.try_push(HEX_CHARS[(byte >> 4) as usize] as char);
+            let _ = LINE_BUF.try_push(HEX_CHARS[(byte & 0xf) as usize] as char);
+        }
+    }
+
+    #[inline(never)]
+    pub fn write_hex_32(bytes: &[u8; 32]) {
+        write_str("0x");
+        for b in bytes {
+            write_hex_byte(*b);
+        }
+    }
+
+    #[inline(never)]
+    pub fn write_hex_slice(bytes: &[u8]) {
+        write_str("0x");
+        for b in bytes {
+            write_hex_byte(*b);
+        }
+    }
+
+    #[inline(never)]
+    pub fn newline() {
+        unsafe {
+            let _ = LINE_BUF.try_push('\n');
+            flush_buffer(&LINE_BUF);
+            LINE_BUF.clear();
+        }
+    }
+}
+
+/// No-op stub for non-RISC-V targets (host builds, benchmarks, etc.)
+#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
+mod uart_log {
+    #[inline(always)]
+    pub fn write_str(_s: &str) {}
+    #[inline(always)]
+    pub fn write_hex_byte(_byte: u8) {}
+    #[inline(always)]
+    pub fn write_hex_32(_bytes: &[u8; 32]) {}
+    #[inline(always)]
+    pub fn write_hex_slice(_bytes: &[u8]) {}
+    #[inline(always)]
+    pub fn newline() {}
+}
+
 pub fn ecrecover_inner(
     digest: &[u8; 32],
     r: &[u8; 32],
@@ -97,19 +213,47 @@ pub fn ecrecover_inner(
         Scalar,
     };
 
-    let signature = Signature::from_scalars(*r, *s).map_err(|_| ())?;
-    let recovery_id = RecoveryId::try_from(rec_id).map_err(|_| ())?;
+    // Log inputs
+    uart_log::write_str("[ecrecover_inner] INPUT: digest=");
+    uart_log::write_hex_32(digest);
+    uart_log::write_str(", r=");
+    uart_log::write_hex_32(r);
+    uart_log::write_str(", s=");
+    uart_log::write_hex_32(s);
+    uart_log::write_str(", rec_id=");
+    uart_log::write_hex_byte(rec_id);
+    uart_log::newline();
+
+    let signature = Signature::from_scalars(*r, *s).map_err(|_| {
+        uart_log::write_str("[ecrecover_inner] OUTPUT: Error - failed to create signature from scalars\n");
+    })?;
+    let recovery_id = RecoveryId::try_from(rec_id).map_err(|_| {
+        uart_log::write_str("[ecrecover_inner] OUTPUT: Error - invalid recovery id\n");
+    })?;
 
     let message = <Scalar as Reduce<crypto::k256::U256>>::reduce_bytes(
-        &bits2field::<crypto::k256::Secp256k1>(digest).map_err(|_| ())?,
+        &bits2field::<crypto::k256::Secp256k1>(digest).map_err(|_| {
+            uart_log::write_str("[ecrecover_inner] OUTPUT: Error - bits2field failed\n");
+        })?,
     );
 
+    // Log encoded message scalar
+    uart_log::write_str("[ecrecover_inner] Encoded message scalar: ");
+    uart_log::write_hex_slice(message.to_bytes().as_slice());
+    uart_log::newline();
+
     let Ok(pk) = crypto::secp256k1::recover(&message, &signature, &recovery_id) else {
+        uart_log::write_str("[ecrecover_inner] OUTPUT: Error - recovery failed\n");
         return Err(());
     };
 
     // represent as bytes, and we do not need compression
     let encoded = pk.to_encoded_point(false);
+
+    // Log output
+    uart_log::write_str("[ecrecover_inner] OUTPUT: Success - encoded_point=");
+    uart_log::write_hex_slice(encoded.as_bytes());
+    uart_log::newline();
 
     Ok(encoded)
 }
