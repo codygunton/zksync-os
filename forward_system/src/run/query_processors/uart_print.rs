@@ -45,8 +45,9 @@ impl<M: MemorySource> OracleQueryProcessor<M> for UARTPrintResponder {
             .collect();
         assert!(string_bytes.len() >= message_len_in_bytes);
         string_bytes.truncate(message_len_in_bytes);
-        print!("{}", String::from_utf8_lossy(&string_bytes));
-        // println!("UART: {}", String::from_utf8_lossy(&string_bytes));
+        // Print with [GUEST] prefix for consistency with Zisk emulator
+        // Use eprint! (not eprintln!) since guest messages include newlines
+        eprint!("[GUEST] {}", String::from_utf8_lossy(&string_bytes));
 
         DynUsizeIterator::from_constructor((), UsizeSerializable::iter)
     }
