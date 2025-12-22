@@ -5,21 +5,26 @@ use cfg_if::cfg_if;
 
 mod invert;
 
-#[cfg(all(target_pointer_width = "64", not(feature = "bigint_ops")))]
+// scalar64: pure Rust 64-bit implementation, used on all 64-bit platforms
+// (except riscv32 with bigint_ops which uses CSR delegation)
+#[cfg(target_pointer_width = "64")]
 mod scalar64;
 
 #[cfg(all(target_pointer_width = "32", not(feature = "bigint_ops")))]
 mod scalar32;
 
+// scalar32_delegation: only used on riscv32 with bigint_ops (airbender CSR delegation)
 #[cfg(any(
-    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    all(target_arch = "riscv32", feature = "bigint_ops"),
     test,
     all(feature = "proving", fuzzing)
 ))]
 pub(crate) mod scalar32_delegation;
 
 cfg_if! {
-    if #[cfg(feature = "bigint_ops")] {
+    // Only use bigint_ops delegation on riscv32 (airbender has CSR 0x7ca support)
+    // Zisk (riscv64) doesn't support CSR 0x7ca, so use pure Rust scalar64
+    if #[cfg(all(feature = "bigint_ops", target_arch = "riscv32"))] {
         use scalar32_delegation::ScalarInner;
     } else if #[cfg(target_pointer_width = "32")] {
         use scalar32::ScalarInner;
@@ -238,7 +243,9 @@ mod tests {
             let (mut r1, mut r2) = k.decompose();
             let lambda = -Scalar::MINUS_LAMBDA;
 
-            #[cfg(feature = "bigint_ops")]
+            // scalar32_delegation uses Montgomery representation internally,
+            // so we need to convert to normal representation for comparison
+            #[cfg(all(feature = "bigint_ops", target_arch = "riscv32"))]
             {
                 r1 = Scalar(r1.0.to_representation());
                 r2 = Scalar(r2.0.to_representation());
@@ -246,7 +253,8 @@ mod tests {
 
             prop_assert_eq!(r1 + r2 * lambda, k);
 
-            #[cfg(feature = "bigint_ops")]
+            // Convert back to integer form for the bound check
+            #[cfg(all(feature = "bigint_ops", target_arch = "riscv32"))]
             {
                 r1 = Scalar(r1.0.to_integer());
                 r2 = Scalar(r2.0.to_integer());

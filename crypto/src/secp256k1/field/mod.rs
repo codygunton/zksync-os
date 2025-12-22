@@ -2,18 +2,22 @@ use crate::k256::FieldBytes;
 use cfg_if::cfg_if;
 use core::ops::{AddAssign, MulAssign, SubAssign};
 
+// field_10x26: 32-bit implementation
 #[cfg(any(any(target_arch = "riscv32", target_arch = "riscv64"), test, all(feature = "proving", fuzzing)))]
 mod field_10x26;
 #[cfg(any(any(target_arch = "riscv32", target_arch = "riscv64"), test, all(feature = "proving", fuzzing)))]
 mod mod_inv32;
 
+// field_5x52: 64-bit implementation, also used on riscv64 regardless of bigint_ops
+// (Zisk doesn't support CSR 0x7ca delegation)
 #[cfg(any(target_pointer_width = "64", test, all(feature = "proving", fuzzing)))]
 mod field_5x52;
 #[cfg(any(target_pointer_width = "64", test, all(feature = "proving", fuzzing)))]
 mod mod_inv64;
 
+// field_8x32: CSR delegation implementation, only used on riscv32 with bigint_ops
 #[cfg(any(
-    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    all(target_arch = "riscv32", feature = "bigint_ops"),
     test,
     all(feature = "proving", fuzzing)
 ))]
@@ -25,7 +29,9 @@ mod field_impl;
 cfg_if! {
     if #[cfg(all(debug_assertions, not(feature = "bigint_ops")))] {
         use field_impl::{FieldElementImpl as FieldElementImplConst, FieldElementImpl, FieldStorageImpl};
-    } else if #[cfg(feature = "bigint_ops")] {
+    // Only use bigint_ops delegation on riscv32 (airbender has CSR 0x7ca support)
+    // Zisk (riscv64) doesn't support CSR 0x7ca, so use pure Rust field_5x52
+    } else if #[cfg(all(feature = "bigint_ops", target_arch = "riscv32"))] {
         use field_10x26::{FieldElement10x26 as FieldElementImplConst, FieldStorage10x26 as FieldStorageImpl};
         use field_8x32::FieldElement8x32 as FieldElementImpl;
     } else if #[cfg(target_pointer_width = "64")] {

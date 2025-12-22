@@ -772,7 +772,8 @@ impl FieldStorage10x26 {
         ])
     }
 
-    #[cfg(feature = "bigint_ops")]
+    // Only available on riscv32 with bigint_ops (where field_8x32 is compiled)
+    #[cfg(all(target_arch = "riscv32", feature = "bigint_ops"))]
     #[inline(always)]
     pub(super) fn to_field_elem(self) -> crate::secp256k1::field::field_8x32::FieldElement8x32 {
         let mut res = [0; 4];

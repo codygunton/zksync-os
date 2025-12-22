@@ -1,12 +1,15 @@
+// scalar_delegation: only used on riscv32 with bigint_ops (airbender CSR delegation)
 #[cfg(any(
-    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    all(target_arch = "riscv32", feature = "bigint_ops"),
     test,
     all(feature = "proving", fuzzing)
 ))]
 mod scalar_delegation;
 
+// scalar64: used when not using delegation, or on riscv64 regardless of bigint_ops
+// (Zisk doesn't support CSR 0x7ca delegation)
 #[cfg(not(any(
-    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    all(target_arch = "riscv32", feature = "bigint_ops"),
     all(feature = "proving", fuzzing)
 )))]
 mod scalar64;
@@ -14,15 +17,16 @@ mod scalar64;
 use core::ops::{Mul, Neg};
 
 cfg_if::cfg_if! {
+    // Only use bigint_ops delegation on riscv32 (airbender has CSR 0x7ca support)
+    // Zisk (riscv64) doesn't support CSR 0x7ca, so use pure Rust scalar64
     if #[cfg(any(
-        all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+        all(target_arch = "riscv32", feature = "bigint_ops"),
         all(feature = "proving", fuzzing)
     ))] {
         pub(super) use scalar_delegation::Scalar;
     } else {
         pub(super) use scalar64::Scalar;
     }
-
 }
 
 use super::{wnaf::ToWnaf, Secp256r1Err};

@@ -1,5 +1,6 @@
+// fe32_delegation: only used on riscv32 with bigint_ops (airbender CSR delegation)
 #[cfg(any(
-    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    all(target_arch = "riscv32", feature = "bigint_ops"),
     test,
     all(feature = "proving", fuzzing)
 ))]
@@ -10,8 +11,10 @@ mod fe64;
 use core::ops::MulAssign;
 
 cfg_if::cfg_if! {
+    // Only use bigint_ops delegation on riscv32 (airbender has CSR 0x7ca support)
+    // Zisk (riscv64) doesn't support CSR 0x7ca, so use pure Rust fe64
     if #[cfg(any(
-        all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+        all(target_arch = "riscv32", feature = "bigint_ops"),
         all(feature = "proving", fuzzing)
     ))] {
         pub(super) use fe32_delegation::FieldElement;
@@ -139,16 +142,19 @@ impl FieldElementConst {
         x
     }
 
+    // When NOT using fe32_delegation (FieldElementConst == FieldElement == fe64)
     #[cfg(not(any(
-        all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+        all(target_arch = "riscv32", feature = "bigint_ops"),
         all(feature = "proving", fuzzing)
     )))]
     pub(super) const fn to_fe(self) -> FieldElement {
         self
     }
 
+    // When using fe32_delegation (riscv32 with bigint_ops, or proving+fuzzing)
+    // FieldElementConst is fe64 but FieldElement is fe32_delegation::FieldElement
     #[cfg(any(
-        all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+        all(target_arch = "riscv32", feature = "bigint_ops"),
         all(feature = "proving", fuzzing)
     ))]
     pub(super) const fn to_fe(self) -> FieldElement {
