@@ -165,11 +165,28 @@ impl LegacyPayloadParser {
         uart_log::write_usize(legacy_signature.v as usize);
         uart_log::newline();
 
+        // WORKAROUND: Copy inner_slice to local buffer before hashing.
+        // Direct slice access from input buffer memory produces incorrect hashes on ZisK (RV64).
+        // Same bug as in eip_2718_tx_envelope.rs - see ai_plans/riscv-compiler-bugs.md
+        // Use volatile READS and WRITES to prevent any compiler optimization issues.
+        let mut local_buf = [0u8; 2048];
+        let local_len = inner_slice.len();
+        for i in 0..local_len {
+            unsafe {
+                let byte = core::ptr::read_volatile(&inner_slice[i]);
+                core::ptr::write_volatile(&mut local_buf[i], byte);
+            }
+        }
+        let local_slice = &local_buf[..local_len];
+
         let sig_hash: Bytes32 = if legacy_signature.is_eip155() == false {
             // Unprotected legacy
             let mut hasher = crypto::sha3::Keccak256::new();
-            apply_list_concatenation_encoding_to_hash(inner_slice.len() as u32, &mut hasher);
-            hasher.update(inner_slice);
+            apply_list_concatenation_encoding_to_hash(local_len as u32, &mut hasher);
+            // WORKAROUND: Use byte-by-byte updates like EIP-2718 does
+            for i in 0..local_len {
+                hasher.update(&[local_slice[i]]);
+            }
             hasher.finalize_reset().into()
         } else {
             // EIP-155 protected legacy: v must match 35 + 2*chainId (+ {0,1})
@@ -190,10 +207,13 @@ impl LegacyPayloadParser {
 
             let mut hasher = crypto::sha3::Keccak256::new();
             apply_list_concatenation_encoding_to_hash(
-                (inner_slice.len() + chain_id_encoding_len + 2) as u32,
+                (local_len + chain_id_encoding_len + 2) as u32,
                 &mut hasher,
             );
-            hasher.update(inner_slice);
+            // WORKAROUND: Use byte-by-byte updates like EIP-2718 does
+            for i in 0..local_len {
+                hasher.update(&[local_slice[i]]);
+            }
             apply_u64_encoding_to_hash(chain_id, &mut hasher);
             hasher.update(&[0x80, 0x80]);
             hasher.finalize_reset().into()
