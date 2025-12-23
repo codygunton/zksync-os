@@ -262,6 +262,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
             elf: Some(elf_path.to_string()),
             verbose: false,  // Keep quiet for cleaner logs (set to true for debugging)
             uart: "stderr".to_string(),
+            log_metrics: true,  // Show step count and performance metrics
             ..Default::default()
         };
 

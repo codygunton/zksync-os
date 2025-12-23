@@ -473,11 +473,11 @@ impl<M: MemorySource> ZkEENonDeterminismSource<M> {
 
     fn write_impl(&mut self, memory: &M, value: u32) {
         // Debug: log writes only when verbose oracle is enabled
-        if value != 0 && verbose_query_logging() {
-            static WRITE_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let count = WRITE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            eprintln!("[ORACLE DEBUG] write #{}: 0x{:08x}", count, value);
-        }
+        // if value != 0 && verbose_query_logging() {
+        //     static WRITE_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        //     let count = WRITE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        //     // eprintln!("[ORACLE DEBUG] write #{}: 0x{:08x}", count, value);
+        // }
 
         // CSRRW instruction always writes to CSR, even when "reading".
         // When the guest does `csrrw rd, 0x7c0, x0` to read, it also writes x0=0.

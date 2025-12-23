@@ -4,6 +4,112 @@ use crate::secp256k1::field::{FieldElement, FieldElementConst};
 
 use super::{jacobian::JacobianConst, AffineStorage, Jacobian};
 
+/// CSR-based QuasiUART for RISC-V guests
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+mod uart_log {
+    const HELLO_MARKER: u32 = u32::MAX;
+    const BUF_SIZE: usize = 280;
+
+    static mut LINE_BUF: [u8; BUF_SIZE] = [0u8; BUF_SIZE];
+    static mut LINE_LEN: usize = 0;
+
+    #[inline(always)]
+    fn csr_write_word(word: usize) {
+        unsafe {
+            core::arch::asm!(
+                "csrrw x0, 0x7c0, {rd}",
+                rd = in(reg) word,
+                options(nomem, nostack, preserves_flags)
+            )
+        }
+    }
+
+    fn flush_buffer() {
+        unsafe {
+            let len = LINE_LEN;
+            if len == 0 {
+                return;
+            }
+            csr_write_word(HELLO_MARKER as usize);
+            csr_write_word(len.next_multiple_of(4) / 4 + 1);
+            csr_write_word(len);
+
+            let mut i = 0;
+            while i + 4 <= len {
+                let word = u32::from_le_bytes([LINE_BUF[i], LINE_BUF[i + 1], LINE_BUF[i + 2], LINE_BUF[i + 3]]);
+                csr_write_word(word as usize);
+                i += 4;
+            }
+            if i < len {
+                let mut buf = [0u8; 4];
+                for j in 0..(len - i) {
+                    buf[j] = LINE_BUF[i + j];
+                }
+                csr_write_word(u32::from_le_bytes(buf) as usize);
+            }
+        }
+    }
+
+    #[inline(never)]
+    pub fn write_str(s: &str) {
+        unsafe {
+            for b in s.bytes() {
+                if LINE_LEN < BUF_SIZE {
+                    LINE_BUF[LINE_LEN] = b;
+                    LINE_LEN += 1;
+                }
+            }
+        }
+    }
+
+    #[inline(never)]
+    pub fn write_hex_byte(byte: u8) {
+        const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+        unsafe {
+            if LINE_LEN < BUF_SIZE {
+                LINE_BUF[LINE_LEN] = HEX_CHARS[(byte >> 4) as usize];
+                LINE_LEN += 1;
+            }
+            if LINE_LEN < BUF_SIZE {
+                LINE_BUF[LINE_LEN] = HEX_CHARS[(byte & 0xf) as usize];
+                LINE_LEN += 1;
+            }
+        }
+    }
+
+    #[inline(never)]
+    pub fn write_hex_slice(bytes: &[u8]) {
+        write_str("0x");
+        for b in bytes {
+            write_hex_byte(*b);
+        }
+    }
+
+    #[inline(never)]
+    pub fn newline() {
+        unsafe {
+            if LINE_LEN < BUF_SIZE {
+                LINE_BUF[LINE_LEN] = b'\n';
+                LINE_LEN += 1;
+            }
+            flush_buffer();
+            LINE_LEN = 0;
+        }
+    }
+}
+
+#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
+mod uart_log {
+    #[inline(always)]
+    pub fn write_str(_s: &str) {}
+    #[inline(always)]
+    pub fn write_hex_byte(_byte: u8) {}
+    #[inline(always)]
+    pub fn write_hex_slice(_bytes: &[u8]) {}
+    #[inline(always)]
+    pub fn newline() {}
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AffineConst {
     pub(crate) x: FieldElementConst,
@@ -226,15 +332,33 @@ impl Affine {
     pub fn to_encoded_point(self, compress: bool) -> EncodedPoint {
         use crate::k256::elliptic_curve::subtle::ConditionallySelectable;
 
-        EncodedPoint::conditional_select(
-            &EncodedPoint::from_affine_coordinates(
-                &self.x.to_bytes(),
-                &self.y.to_bytes(),
-                compress,
-            ),
+        uart_log::write_str("[affine.to_encoded_point] computing x.to_bytes()\n");
+        let x_bytes = self.x.to_bytes();
+        uart_log::write_str("[affine.to_encoded_point] x_bytes: ");
+        uart_log::write_hex_slice(&x_bytes);
+        uart_log::newline();
+
+        uart_log::write_str("[affine.to_encoded_point] computing y.to_bytes()\n");
+        let y_bytes = self.y.to_bytes();
+        uart_log::write_str("[affine.to_encoded_point] y_bytes: ");
+        uart_log::write_hex_slice(&y_bytes);
+        uart_log::newline();
+
+        uart_log::write_str("[affine.to_encoded_point] is_infinity: ");
+        uart_log::write_hex_byte(self.is_infinity() as u8);
+        uart_log::newline();
+
+        let result = EncodedPoint::conditional_select(
+            &EncodedPoint::from_affine_coordinates(&x_bytes, &y_bytes, compress),
             &EncodedPoint::identity(),
             Choice::from(self.is_infinity() as u8),
-        )
+        );
+
+        uart_log::write_str("[affine.to_encoded_point] result: ");
+        uart_log::write_hex_slice(result.as_bytes());
+        uart_log::newline();
+
+        result
     }
 
     pub fn to_bytes(self) -> CompressedPoint {

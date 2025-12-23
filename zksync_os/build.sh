@@ -74,27 +74,27 @@ case "$MACHINE" in
         echo "=== Building for AIRBENDER (RV32IM, entry 0x01000000) ==="
         ;;
     qemu)
-        # RV64IM for QEMU debugging (512M RAM available)
-        TARGET="riscv64im-unknown-none-elf.json"
+        # RV64IMAC for QEMU debugging (512M RAM available)
+        TARGET="riscv64imac-unknown-none-elf"
         MEMORY_LAYOUT="memory-qemu.x"
         LINK_SCRIPT="link-512m.x"
-        TARGET_FEATURES="+m,-unaligned-scalar-mem,+relax"
-        BUILD_STD_FLAGS="-Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem"
-        echo "=== Building for QEMU (RV64IM, RAM at 0x88000000) ==="
+        TARGET_FEATURES="+m,+a,+c,-unaligned-scalar-mem,+relax"
+        BUILD_STD_FLAGS=""
+        echo "=== Building for QEMU (RV64IMAC, RAM at 0x88000000) ==="
         ;;
     zisk)
-        # RV64IM for Zisk zkVM (512M RAM available)
-        TARGET="riscv64im-unknown-none-elf.json"
+        # RV64IMAC for Zisk zkVM (512M RAM available)
+        TARGET="riscv64imac-unknown-none-elf"
         if $DEBUG; then
             MEMORY_LAYOUT="memory-zisk-debug.x"
-            echo "=== Building for ZISK DEBUG (RV64IM, low addresses for debug info) ==="
+            echo "=== Building for ZISK DEBUG (RV64IMAC, low addresses for debug info) ==="
         else
             MEMORY_LAYOUT="memory-zisk.x"
-            echo "=== Building for ZISK (RV64IM, RAM at 0xa0000000) ==="
+            echo "=== Building for ZISK (RV64IMAC, RAM at 0xa0000000) ==="
         fi
         LINK_SCRIPT="link-512m.x"
-        TARGET_FEATURES="+m,-unaligned-scalar-mem,+relax"
-        BUILD_STD_FLAGS="-Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem"
+        TARGET_FEATURES="+m,+a,+c,-unaligned-scalar-mem,+relax"
+        BUILD_STD_FLAGS=""
         ;;
     *)
         echo "Invalid --machine: $MACHINE"

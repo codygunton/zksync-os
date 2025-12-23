@@ -94,28 +94,70 @@ fn ecrecover_as_system_function_inner<
         let r = it.next().unwrap_unchecked();
         let s = it.next().unwrap_unchecked();
 
+        // Log extracted values from buffer
+        uart_log::write_str("[ecrecover] extracted digest: ");
+        uart_log::write_hex_slice(digest);
+        uart_log::newline();
+        uart_log::write_str("[ecrecover] extracted v: ");
+        uart_log::write_hex_slice(v);
+        uart_log::newline();
+        uart_log::write_str("[ecrecover] extracted r: ");
+        uart_log::write_hex_slice(r);
+        uart_log::newline();
+        uart_log::write_str("[ecrecover] extracted s: ");
+        uart_log::write_hex_slice(s);
+        uart_log::newline();
+
         if v[..31].iter().all(|el| *el == 0) == false {
+            uart_log::write_str("[ecrecover] ERROR: v prefix not zero\n");
             return Ok(());
         }
 
         let rec_id = v[31].wrapping_sub(27);
+        uart_log::write_str("[ecrecover] rec_id: ");
+        uart_log::write_hex_byte(rec_id);
+        uart_log::newline();
+
         if (rec_id == 0 || rec_id == 1) == false {
+            uart_log::write_str("[ecrecover] ERROR: invalid rec_id\n");
             return Ok(());
         }
 
+        uart_log::write_str("[ecrecover] calling ecrecover_inner\n");
         let Ok(pk_bytes) = ecrecover_inner(digest, r, s, rec_id) else {
+            uart_log::write_str("[ecrecover] ERROR: ecrecover_inner failed\n");
             return Ok(());
         };
 
+        uart_log::write_str("[ecrecover] ecrecover_inner succeeded\n");
         pk_bytes
     };
     let bytes_ref = recovered_pubkey_bytes.as_ref();
 
+    // Log the recovered public key
+    uart_log::write_str("[ecrecover] recovered_pubkey (65 bytes): ");
+    uart_log::write_hex_slice(bytes_ref);
+    uart_log::newline();
+
     use crypto::sha3::{Digest, Keccak256};
     let address_hash = Keccak256::digest(&bytes_ref[1..]);
 
+    // Log the keccak hash
+    uart_log::write_str("[ecrecover] keccak256 hash: ");
+    uart_log::write_hex_slice(&address_hash);
+    uart_log::newline();
+
+    // Log the final 20 bytes (address)
+    uart_log::write_str("[ecrecover] final address (last 20): ");
+    for b in address_hash.iter().skip(12) {
+        uart_log::write_hex_byte(*b);
+    }
+    uart_log::newline();
+
     dst.try_extend(core::iter::repeat_n(0, 12).chain(address_hash.into_iter().skip(12)))
         .map_err(|_| out_of_return_memory!())?;
+
+    uart_log::write_str("[ecrecover] wrote result to dst\n");
 
     Ok(())
 }
@@ -279,13 +321,17 @@ pub fn ecrecover_inner(
     uart_log::write_hex_slice(message.to_bytes().as_slice());
     uart_log::newline();
 
+    uart_log::write_str("[ecrecover_inner] calling recover()\n");
     let Ok(pk) = crypto::secp256k1::recover(&message, &signature, &recovery_id) else {
         uart_log::write_str("[ecrecover_inner] OUTPUT: Error - recovery failed\n");
         return Err(());
     };
+    uart_log::write_str("[ecrecover_inner] recover() returned successfully\n");
 
     // represent as bytes, and we do not need compression
+    uart_log::write_str("[ecrecover_inner] calling to_encoded_point(false)\n");
     let encoded = pk.to_encoded_point(false);
+    uart_log::write_str("[ecrecover_inner] to_encoded_point returned\n");
 
     // Log output
     uart_log::write_str("[ecrecover_inner] OUTPUT: Success - encoded_point=");

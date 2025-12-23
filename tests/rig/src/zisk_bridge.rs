@@ -182,14 +182,6 @@ impl ZiskOracleBridge {
     /// # Safety
     /// Must only be called from a single thread.
     fn write_u64(&self, val: u64) {
-        // Debug: log first 100 writes to see if UART marker appears
-        static BRIDGE_WRITE_COUNT: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(0);
-        let count = BRIDGE_WRITE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if count < 100 || val == 0xFFFFFFFF {
-            // eprintln!("[BRIDGE DEBUG] write_u64 #{}: 0x{:016x} (low32=0x{:08x})", count, val, val as u32);
-        }
-
         // The CSRRW instruction writes x0=0 when reading, causing spurious writes.
         // We need to ignore write(0) when:
         // 1. We're in the middle of reading a response (remaining > 0)

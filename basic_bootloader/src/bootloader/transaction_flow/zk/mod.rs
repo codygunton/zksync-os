@@ -30,6 +30,98 @@ use zk_ee::system::{
 };
 use zk_ee::{internal_error, out_of_native_resources, wrap_error};
 
+/// CSR-based QuasiUART for RISC-V guests (both Airbender and Zisk)
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+mod uart_log {
+    use arrayvec::ArrayString;
+
+    const HELLO_MARKER: u32 = u32::MAX;
+    const BUF_SIZE: usize = 280;
+
+    static mut LINE_BUF: ArrayString<BUF_SIZE> = ArrayString::new_const();
+
+    #[inline(always)]
+    fn csr_write_word(word: usize) {
+        unsafe {
+            core::arch::asm!(
+                "csrrw x0, 0x7c0, {rd}",
+                rd = in(reg) word,
+                options(nomem, nostack, preserves_flags)
+            )
+        }
+    }
+
+    fn flush_buffer(s: &str) {
+        let len = s.len();
+        if len == 0 {
+            return;
+        }
+        csr_write_word(HELLO_MARKER as usize);
+        csr_write_word(len.next_multiple_of(4) / 4 + 1);
+        csr_write_word(len);
+
+        let bytes = s.as_bytes();
+        let mut i = 0;
+        while i + 4 <= len {
+            let word = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+            csr_write_word(word as usize);
+            i += 4;
+        }
+        if i < len {
+            let mut buf = [0u8; 4];
+            for j in 0..(len - i) {
+                buf[j] = bytes[i + j];
+            }
+            csr_write_word(u32::from_le_bytes(buf) as usize);
+        }
+    }
+
+    #[inline(never)]
+    pub fn write_str(s: &str) {
+        unsafe {
+            let _ = LINE_BUF.try_push_str(s);
+        }
+    }
+
+    #[inline(never)]
+    pub fn write_hex_byte(byte: u8) {
+        const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+        unsafe {
+            let _ = LINE_BUF.try_push(HEX_CHARS[(byte >> 4) as usize] as char);
+            let _ = LINE_BUF.try_push(HEX_CHARS[(byte & 0xf) as usize] as char);
+        }
+    }
+
+    #[inline(never)]
+    pub fn write_hex_slice(bytes: &[u8]) {
+        write_str("0x");
+        for b in bytes {
+            write_hex_byte(*b);
+        }
+    }
+
+    #[inline(never)]
+    pub fn newline() {
+        unsafe {
+            let _ = LINE_BUF.try_push('\n');
+            flush_buffer(&LINE_BUF);
+            LINE_BUF.clear();
+        }
+    }
+}
+
+#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
+mod uart_log {
+    #[inline(always)]
+    pub fn write_str(_s: &str) {}
+    #[inline(always)]
+    pub fn write_hex_byte(_byte: u8) {}
+    #[inline(always)]
+    pub fn write_hex_slice(_bytes: &[u8]) {}
+    #[inline(always)]
+    pub fn newline() {}
+}
+
 pub struct ZkTransactionFlowOnlyEOA;
 
 impl<S: EthereumLikeTypes> BasicTransactionFlow<S> for ZkTransactionFlowOnlyEOA
@@ -112,6 +204,17 @@ where
             ecrecover_input[64..96][(32 - r.len())..].copy_from_slice(r);
             ecrecover_input[96..128][(32 - s.len())..].copy_from_slice(s);
 
+            // Log ecrecover input
+            uart_log::write_str("[validate] ecrecover_input r: ");
+            uart_log::write_hex_slice(&ecrecover_input[64..96]);
+            uart_log::newline();
+            uart_log::write_str("[validate] ecrecover_input s: ");
+            uart_log::write_hex_slice(&ecrecover_input[96..128]);
+            uart_log::newline();
+            uart_log::write_str("[validate] expected from: ");
+            uart_log::write_hex_slice(&from.to_be_bytes::<20>());
+            uart_log::newline();
+
             let mut ecrecover_output = ArrayBuilder::default();
             S::SystemFunctions::secp256k1_ec_recover(
                 ecrecover_input.as_slice(),
@@ -121,7 +224,10 @@ where
             )
             .map_err(SystemError::from)?;
 
+            uart_log::write_str("[validate] after secp256k1_ec_recover, checking is_empty\n");
+
             if ecrecover_output.is_empty() {
+                uart_log::write_str("[validate] ERROR: ecrecover_output is empty\n");
                 return Err(InvalidTransaction::IncorrectFrom {
                     recovered: B160::ZERO,
                     tx: *from,
@@ -129,16 +235,31 @@ where
                 .into());
             }
 
-            let recovered_from = B160::try_from_be_slice(&ecrecover_output.build()[12..])
+            uart_log::write_str("[validate] is_empty=false, calling build()\n");
+            let output_built = ecrecover_output.build();
+            uart_log::write_str("[validate] build() returned, len=");
+            uart_log::write_hex_byte(output_built.len() as u8);
+            uart_log::newline();
+            uart_log::write_str("[validate] ecrecover_output full: ");
+            uart_log::write_hex_slice(&output_built);
+            uart_log::newline();
+
+            let recovered_from = B160::try_from_be_slice(&output_built[12..])
                 .ok_or(internal_error!("Invalid ecrecover return value"))?;
 
+            uart_log::write_str("[validate] recovered_from: ");
+            uart_log::write_hex_slice(&recovered_from.to_be_bytes::<20>());
+            uart_log::newline();
+
             if &recovered_from != from {
+                uart_log::write_str("[validate] ERROR: IncorrectFrom - mismatch!\n");
                 return Err(InvalidTransaction::IncorrectFrom {
                     recovered: recovered_from,
                     tx: *from,
                 }
                 .into());
             }
+            uart_log::write_str("[validate] SUCCESS: from matches recovered\n");
         }
 
         let old_nonce = match system
