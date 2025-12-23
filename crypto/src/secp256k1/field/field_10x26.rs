@@ -109,39 +109,82 @@ impl FieldElement10x26 {
     #[inline(always)]
     pub(super) fn to_bytes(self) -> FieldBytes {
         let mut r = FieldBytes::default();
-        r[0] = (self.0[9] >> 14) as u8;
-        r[1] = (self.0[9] >> 6) as u8;
-        r[2] = ((self.0[9] as u8 & 0x3Fu8) << 2) | ((self.0[8] >> 24) as u8 & 0x3);
-        r[3] = (self.0[8] >> 16) as u8;
-        r[4] = (self.0[8] >> 8) as u8;
-        r[5] = self.0[8] as u8;
-        r[6] = (self.0[7] >> 18) as u8;
-        r[7] = (self.0[7] >> 10) as u8;
-        r[8] = (self.0[7] >> 2) as u8;
-        r[9] = ((self.0[7] as u8 & 0x3u8) << 6) | ((self.0[6] >> 20) as u8 & 0x3fu8);
-        r[10] = (self.0[6] >> 12) as u8;
-        r[11] = (self.0[6] >> 4) as u8;
-        r[12] = ((self.0[6] as u8 & 0xfu8) << 4) | ((self.0[5] >> 22) as u8 & 0xfu8);
-        r[13] = (self.0[5] >> 14) as u8;
-        r[14] = (self.0[5] >> 6) as u8;
-        r[15] = ((self.0[5] as u8 & 0x3fu8) << 2) | ((self.0[4] >> 24) as u8 & 0x3u8);
-        r[16] = (self.0[4] >> 16) as u8;
-        r[17] = (self.0[4] >> 8) as u8;
-        r[18] = self.0[4] as u8;
-        r[19] = (self.0[3] >> 18) as u8;
-        r[20] = (self.0[3] >> 10) as u8;
-        r[21] = (self.0[3] >> 2) as u8;
-        r[22] = ((self.0[3] as u8 & 0x3u8) << 6) | ((self.0[2] >> 20) as u8 & 0x3fu8);
-        r[23] = (self.0[2] >> 12) as u8;
-        r[24] = (self.0[2] >> 4) as u8;
-        r[25] = ((self.0[2] as u8 & 0xfu8) << 4) | ((self.0[1] >> 22) as u8 & 0xfu8);
-        r[26] = (self.0[1] >> 14) as u8;
-        r[27] = (self.0[1] >> 6) as u8;
-        r[28] = ((self.0[1] as u8 & 0x3fu8) << 2) | ((self.0[0] >> 24) as u8 & 0x3u8);
-        r[29] = (self.0[0] >> 16) as u8;
-        r[30] = (self.0[0] >> 8) as u8;
-        r[31] = self.0[0] as u8;
+        // Use volatile writes to prevent compiler optimization issues on riscv32
+        unsafe {
+            core::ptr::write_volatile(&mut r[0], (self.0[9] >> 14) as u8);
+            core::ptr::write_volatile(&mut r[1], (self.0[9] >> 6) as u8);
+            core::ptr::write_volatile(&mut r[2], ((self.0[9] as u8 & 0x3Fu8) << 2) | ((self.0[8] >> 24) as u8 & 0x3));
+            core::ptr::write_volatile(&mut r[3], (self.0[8] >> 16) as u8);
+            core::ptr::write_volatile(&mut r[4], (self.0[8] >> 8) as u8);
+            core::ptr::write_volatile(&mut r[5], self.0[8] as u8);
+            core::ptr::write_volatile(&mut r[6], (self.0[7] >> 18) as u8);
+            core::ptr::write_volatile(&mut r[7], (self.0[7] >> 10) as u8);
+            core::ptr::write_volatile(&mut r[8], (self.0[7] >> 2) as u8);
+            core::ptr::write_volatile(&mut r[9], ((self.0[7] as u8 & 0x3u8) << 6) | ((self.0[6] >> 20) as u8 & 0x3fu8));
+            core::ptr::write_volatile(&mut r[10], (self.0[6] >> 12) as u8);
+            core::ptr::write_volatile(&mut r[11], (self.0[6] >> 4) as u8);
+            core::ptr::write_volatile(&mut r[12], ((self.0[6] as u8 & 0xfu8) << 4) | ((self.0[5] >> 22) as u8 & 0xfu8));
+            core::ptr::write_volatile(&mut r[13], (self.0[5] >> 14) as u8);
+            core::ptr::write_volatile(&mut r[14], (self.0[5] >> 6) as u8);
+            core::ptr::write_volatile(&mut r[15], ((self.0[5] as u8 & 0x3fu8) << 2) | ((self.0[4] >> 24) as u8 & 0x3u8));
+            core::ptr::write_volatile(&mut r[16], (self.0[4] >> 16) as u8);
+            core::ptr::write_volatile(&mut r[17], (self.0[4] >> 8) as u8);
+            core::ptr::write_volatile(&mut r[18], self.0[4] as u8);
+            core::ptr::write_volatile(&mut r[19], (self.0[3] >> 18) as u8);
+            core::ptr::write_volatile(&mut r[20], (self.0[3] >> 10) as u8);
+            core::ptr::write_volatile(&mut r[21], (self.0[3] >> 2) as u8);
+            core::ptr::write_volatile(&mut r[22], ((self.0[3] as u8 & 0x3u8) << 6) | ((self.0[2] >> 20) as u8 & 0x3fu8));
+            core::ptr::write_volatile(&mut r[23], (self.0[2] >> 12) as u8);
+            core::ptr::write_volatile(&mut r[24], (self.0[2] >> 4) as u8);
+            core::ptr::write_volatile(&mut r[25], ((self.0[2] as u8 & 0xfu8) << 4) | ((self.0[1] >> 22) as u8 & 0xfu8));
+            core::ptr::write_volatile(&mut r[26], (self.0[1] >> 14) as u8);
+            core::ptr::write_volatile(&mut r[27], (self.0[1] >> 6) as u8);
+            core::ptr::write_volatile(&mut r[28], ((self.0[1] as u8 & 0x3fu8) << 2) | ((self.0[0] >> 24) as u8 & 0x3u8));
+            core::ptr::write_volatile(&mut r[29], (self.0[0] >> 16) as u8);
+            core::ptr::write_volatile(&mut r[30], (self.0[0] >> 8) as u8);
+            core::ptr::write_volatile(&mut r[31], self.0[0] as u8);
+        }
         r
+    }
+
+    /// Writes the field element bytes directly to the output slice.
+    /// Uses volatile writes to prevent compiler optimization issues on riscv32.
+    #[inline(always)]
+    pub(super) fn write_bytes_to(self, out: &mut [u8; 32]) {
+        unsafe {
+            core::ptr::write_volatile(&mut out[0], (self.0[9] >> 14) as u8);
+            core::ptr::write_volatile(&mut out[1], (self.0[9] >> 6) as u8);
+            core::ptr::write_volatile(&mut out[2], ((self.0[9] as u8 & 0x3Fu8) << 2) | ((self.0[8] >> 24) as u8 & 0x3));
+            core::ptr::write_volatile(&mut out[3], (self.0[8] >> 16) as u8);
+            core::ptr::write_volatile(&mut out[4], (self.0[8] >> 8) as u8);
+            core::ptr::write_volatile(&mut out[5], self.0[8] as u8);
+            core::ptr::write_volatile(&mut out[6], (self.0[7] >> 18) as u8);
+            core::ptr::write_volatile(&mut out[7], (self.0[7] >> 10) as u8);
+            core::ptr::write_volatile(&mut out[8], (self.0[7] >> 2) as u8);
+            core::ptr::write_volatile(&mut out[9], ((self.0[7] as u8 & 0x3u8) << 6) | ((self.0[6] >> 20) as u8 & 0x3fu8));
+            core::ptr::write_volatile(&mut out[10], (self.0[6] >> 12) as u8);
+            core::ptr::write_volatile(&mut out[11], (self.0[6] >> 4) as u8);
+            core::ptr::write_volatile(&mut out[12], ((self.0[6] as u8 & 0xfu8) << 4) | ((self.0[5] >> 22) as u8 & 0xfu8));
+            core::ptr::write_volatile(&mut out[13], (self.0[5] >> 14) as u8);
+            core::ptr::write_volatile(&mut out[14], (self.0[5] >> 6) as u8);
+            core::ptr::write_volatile(&mut out[15], ((self.0[5] as u8 & 0x3fu8) << 2) | ((self.0[4] >> 24) as u8 & 0x3u8));
+            core::ptr::write_volatile(&mut out[16], (self.0[4] >> 16) as u8);
+            core::ptr::write_volatile(&mut out[17], (self.0[4] >> 8) as u8);
+            core::ptr::write_volatile(&mut out[18], self.0[4] as u8);
+            core::ptr::write_volatile(&mut out[19], (self.0[3] >> 18) as u8);
+            core::ptr::write_volatile(&mut out[20], (self.0[3] >> 10) as u8);
+            core::ptr::write_volatile(&mut out[21], (self.0[3] >> 2) as u8);
+            core::ptr::write_volatile(&mut out[22], ((self.0[3] as u8 & 0x3u8) << 6) | ((self.0[2] >> 20) as u8 & 0x3fu8));
+            core::ptr::write_volatile(&mut out[23], (self.0[2] >> 12) as u8);
+            core::ptr::write_volatile(&mut out[24], (self.0[2] >> 4) as u8);
+            core::ptr::write_volatile(&mut out[25], ((self.0[2] as u8 & 0xfu8) << 4) | ((self.0[1] >> 22) as u8 & 0xfu8));
+            core::ptr::write_volatile(&mut out[26], (self.0[1] >> 14) as u8);
+            core::ptr::write_volatile(&mut out[27], (self.0[1] >> 6) as u8);
+            core::ptr::write_volatile(&mut out[28], ((self.0[1] as u8 & 0x3fu8) << 2) | ((self.0[0] >> 24) as u8 & 0x3u8));
+            core::ptr::write_volatile(&mut out[29], (self.0[0] >> 16) as u8);
+            core::ptr::write_volatile(&mut out[30], (self.0[0] >> 8) as u8);
+            core::ptr::write_volatile(&mut out[31], self.0[0] as u8);
+        }
     }
 
     #[inline(always)]

@@ -399,12 +399,12 @@ impl<M: MemorySource> ZkEENonDeterminismSource<M> {
             }
 
             // Log query completion (skip UART queries as they're noisy and content is printed by guest)
-            if verbose_query_logging() && query_id != UART_QUERY_ID {
-                eprintln!(
-                    "[oracle] query {} complete, processing... tx={} input_len={} response_len={} (u64s={}) response={:?}",
-                    query_name, self.current_tx_index, input_len, result_len, response_vec.len(), response_preview
-                );
-            }
+
+            //     eprintln!(
+            //         "[oracle] query {} complete, processing... tx={} input_len={} response_len={} (u64s={}) response={:?}",
+            //         query_name, self.current_tx_index, input_len, result_len, response_vec.len(), response_preview
+            //     );
+            // }
 
             // Store in detailed log
             self.query_log.push(QueryLogEntry {

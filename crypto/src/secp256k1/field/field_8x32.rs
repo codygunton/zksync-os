@@ -58,6 +58,18 @@ impl FieldElement8x32 {
         u256::to_be_bytes(self.0).into()
     }
 
+    /// Writes the field element bytes directly to the output slice.
+    #[inline(always)]
+    pub(super) fn write_bytes_to(self, out: &mut [u8; 32]) {
+        let bytes = u256::to_be_bytes(self.0);
+        // Use volatile writes for consistency with other implementations
+        unsafe {
+            for i in 0..32 {
+                core::ptr::write_volatile(&mut out[i], bytes[i]);
+            }
+        }
+    }
+
     pub(super) fn from_words(words: [u64; 4]) -> Self {
         Self(BigInt(words))
     }

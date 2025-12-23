@@ -65,6 +65,10 @@ impl FieldElementImpl {
         self.value.to_bytes()
     }
 
+    pub(super) fn write_bytes_to(self, out: &mut [u8; 32]) {
+        self.value.write_bytes_to(out)
+    }
+
     const fn max_magnitude() -> u32 {
         FieldElementInner::max_magnitude()
     }

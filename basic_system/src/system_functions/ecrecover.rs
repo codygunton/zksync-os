@@ -44,10 +44,7 @@ fn ecrecover_as_system_function_inner<
     ))?;
     // digest, v, r, s in ABI
     let mut buffer = [0u8; 128];
-    // for (dst, src) in buffer.iter_mut().zip(src.iter()) {
-    //     *dst = *src;
-    // }
-    // Use volatile writes to prevent compiler optimization issues on riscv64 (???)
+    // Use volatile writes to prevent compiler optimization issues on riscv64
     let mut idx = 0usize;
     for byte in src.iter() {
         if idx >= 128 {
@@ -59,286 +56,74 @@ fn ecrecover_as_system_function_inner<
         idx += 1;
     }
 
-    // Log r and s values from source and buffer for debugging
-    uart_log::write_str("[ecrecover] src r (bytes 64-95): ");
-    for i in 64..96 {
-        if let Some(b) = src.iter().nth(i) {
-            uart_log::write_hex_byte(*b);
-        }
-    }
-    uart_log::newline();
-    uart_log::write_str("[ecrecover] src s (bytes 96-127): ");
-    for i in 96..128 {
-        if let Some(b) = src.iter().nth(i) {
-            uart_log::write_hex_byte(*b);
-        }
-    }
-    uart_log::newline();
-    uart_log::write_str("[ecrecover] buffer r (bytes 64-95): ");
-    for i in 64..96 {
-        uart_log::write_hex_byte(buffer[i]);
-    }
-    uart_log::newline();
-    uart_log::write_str("[ecrecover] buffer s (bytes 96-127): ");
-    for i in 96..128 {
-        uart_log::write_hex_byte(buffer[i]);
-    }
-    uart_log::newline();
-
     // follow https://github.com/ethereum/go-ethereum/blob/aadcb886753079d419f966a3bc990f708f8d1c3b/core/vm/contracts.go#L188
 
-    let mut it = buffer.array_chunks::<32>();
-    let recovered_pubkey_bytes = unsafe {
+    let mut pk_bytes = [0u8; 65];
+
+    let success = unsafe {
+        let mut it = buffer.array_chunks::<32>();
         let digest = it.next().unwrap_unchecked();
         let v = it.next().unwrap_unchecked();
         let r = it.next().unwrap_unchecked();
         let s = it.next().unwrap_unchecked();
 
-        // Log extracted values from buffer
-        uart_log::write_str("[ecrecover] extracted digest: ");
-        uart_log::write_hex_slice(digest);
-        uart_log::newline();
-        uart_log::write_str("[ecrecover] extracted v: ");
-        uart_log::write_hex_slice(v);
-        uart_log::newline();
-        uart_log::write_str("[ecrecover] extracted r: ");
-        uart_log::write_hex_slice(r);
-        uart_log::newline();
-        uart_log::write_str("[ecrecover] extracted s: ");
-        uart_log::write_hex_slice(s);
-        uart_log::newline();
-
         if v[..31].iter().all(|el| *el == 0) == false {
-            uart_log::write_str("[ecrecover] ERROR: v prefix not zero\n");
             return Ok(());
         }
 
         let rec_id = v[31].wrapping_sub(27);
-        uart_log::write_str("[ecrecover] rec_id: ");
-        uart_log::write_hex_byte(rec_id);
-        uart_log::newline();
 
         if (rec_id == 0 || rec_id == 1) == false {
-            uart_log::write_str("[ecrecover] ERROR: invalid rec_id\n");
             return Ok(());
         }
 
-        uart_log::write_str("[ecrecover] calling ecrecover_inner\n");
-        let Ok(pk_bytes) = ecrecover_inner(digest, r, s, rec_id) else {
-            uart_log::write_str("[ecrecover] ERROR: ecrecover_inner failed\n");
-            return Ok(());
-        };
-
-        uart_log::write_str("[ecrecover] ecrecover_inner succeeded\n");
-        pk_bytes
+        ecrecover_inner(digest, r, s, rec_id, &mut pk_bytes).is_ok()
     };
-    let bytes_ref = recovered_pubkey_bytes.as_ref();
 
-    // Log the recovered public key
-    uart_log::write_str("[ecrecover] recovered_pubkey (65 bytes): ");
-    uart_log::write_hex_slice(bytes_ref);
-    uart_log::newline();
+    if !success {
+        return Ok(());
+    }
 
     use crypto::sha3::{Digest, Keccak256};
-    let address_hash = Keccak256::digest(&bytes_ref[1..]);
-
-    // Log the keccak hash
-    uart_log::write_str("[ecrecover] keccak256 hash: ");
-    uart_log::write_hex_slice(&address_hash);
-    uart_log::newline();
-
-    // Log the final 20 bytes (address)
-    uart_log::write_str("[ecrecover] final address (last 20): ");
-    for b in address_hash.iter().skip(12) {
-        uart_log::write_hex_byte(*b);
-    }
-    uart_log::newline();
+    let address_hash = Keccak256::digest(&pk_bytes[1..]);
 
     dst.try_extend(core::iter::repeat_n(0, 12).chain(address_hash.into_iter().skip(12)))
         .map_err(|_| out_of_return_memory!())?;
 
-    uart_log::write_str("[ecrecover] wrote result to dst\n");
-
     Ok(())
 }
 
-/// CSR-based QuasiUART for RISC-V guests (both Airbender and Zisk)
-/// Uses CSR 0x7c0 with the QuasiUART protocol for unified logging.
-/// Buffers entire lines to produce clean output with single [GUEST] prefix.
-#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
-mod uart_log {
-    use arrayvec::ArrayString;
-
-    const HELLO_MARKER: u32 = u32::MAX; // 0xffffffff = UART_QUERY_ID
-                                        // Buffer size: enough for longest log line
-                                        // "[ecrecover_inner] INPUT: digest=0x" + 64 + ", r=0x" + 64 + ", s=0x" + 64 + ", rec_id=" + 2 + newline
-    const BUF_SIZE: usize = 280;
-
-    // Single-threaded guest buffer
-    static mut LINE_BUF: ArrayString<BUF_SIZE> = ArrayString::new_const();
-
-    #[inline(always)]
-    fn csr_write_word(word: usize) {
-        unsafe {
-            core::arch::asm!(
-                "csrrw x0, 0x7c0, {rd}",
-                rd = in(reg) word,
-                options(nomem, nostack, preserves_flags)
-            )
-        }
-    }
-
-    fn flush_buffer(s: &str) {
-        let len = s.len();
-        if len == 0 {
-            return;
-        }
-        // QuasiUART protocol:
-        // 1. Write HELLO_MARKER (0xffffffff)
-        // 2. Write word count (ceil(len/4) + 1 for length word)
-        // 3. Write message length in bytes
-        // 4. Write message data as 4-byte LE words
-        csr_write_word(HELLO_MARKER as usize);
-        csr_write_word(len.next_multiple_of(4) / 4 + 1);
-        csr_write_word(len);
-
-        // Write bytes in 4-byte words
-        let bytes = s.as_bytes();
-        let mut i = 0;
-        while i + 4 <= len {
-            let word = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
-            csr_write_word(word as usize);
-            i += 4;
-        }
-
-        // Flush remaining bytes (padded with zeros)
-        if i < len {
-            let mut buf = [0u8; 4];
-            for j in 0..(len - i) {
-                buf[j] = bytes[i + j];
-            }
-            csr_write_word(u32::from_le_bytes(buf) as usize);
-        }
-    }
-
-    #[inline(never)]
-    pub fn write_str(s: &str) {
-        unsafe {
-            let _ = LINE_BUF.try_push_str(s);
-        }
-    }
-
-    #[inline(never)]
-    pub fn write_hex_byte(byte: u8) {
-        const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
-        unsafe {
-            let _ = LINE_BUF.try_push(HEX_CHARS[(byte >> 4) as usize] as char);
-            let _ = LINE_BUF.try_push(HEX_CHARS[(byte & 0xf) as usize] as char);
-        }
-    }
-
-    #[inline(never)]
-    pub fn write_hex_32(bytes: &[u8; 32]) {
-        write_str("0x");
-        for b in bytes {
-            write_hex_byte(*b);
-        }
-    }
-
-    #[inline(never)]
-    pub fn write_hex_slice(bytes: &[u8]) {
-        write_str("0x");
-        for b in bytes {
-            write_hex_byte(*b);
-        }
-    }
-
-    #[inline(never)]
-    pub fn newline() {
-        unsafe {
-            let _ = LINE_BUF.try_push('\n');
-            flush_buffer(&LINE_BUF);
-            LINE_BUF.clear();
-        }
-    }
-}
-
-/// No-op stub for non-RISC-V targets (host builds, benchmarks, etc.)
-#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
-mod uart_log {
-    #[inline(always)]
-    pub fn write_str(_s: &str) {}
-    #[inline(always)]
-    pub fn write_hex_byte(_byte: u8) {}
-    #[inline(always)]
-    pub fn write_hex_32(_bytes: &[u8; 32]) {}
-    #[inline(always)]
-    pub fn write_hex_slice(_bytes: &[u8]) {}
-    #[inline(always)]
-    pub fn newline() {}
-}
-
+/// Performs ecrecover and writes the result to the output buffer using volatile writes.
+/// This avoids return value corruption caused by compiler optimizations on RISC-V.
 pub fn ecrecover_inner(
     digest: &[u8; 32],
     r: &[u8; 32],
     s: &[u8; 32],
     rec_id: u8,
-) -> Result<crypto::k256::EncodedPoint, ()> {
+    out: &mut [u8; 65],
+) -> Result<(), ()> {
     use crypto::k256::{
         ecdsa::{hazmat::bits2field, RecoveryId, Signature},
         elliptic_curve::ops::Reduce,
         Scalar,
     };
 
-    // Log inputs
-    uart_log::write_str("[ecrecover_inner] INPUT: digest=");
-    uart_log::write_hex_32(digest);
-    uart_log::write_str(", r=");
-    uart_log::write_hex_32(r);
-    uart_log::write_str(", s=");
-    uart_log::write_hex_32(s);
-    uart_log::write_str(", rec_id=");
-    uart_log::write_hex_byte(rec_id);
-    uart_log::newline();
-
-    let signature = Signature::from_scalars(*r, *s).map_err(|_| {
-        uart_log::write_str(
-            "[ecrecover_inner] OUTPUT: Error - failed to create signature from scalars\n",
-        );
-    })?;
-    let recovery_id = RecoveryId::try_from(rec_id).map_err(|_| {
-        uart_log::write_str("[ecrecover_inner] OUTPUT: Error - invalid recovery id\n");
-    })?;
+    let signature = Signature::from_scalars(*r, *s).map_err(|_| ())?;
+    let recovery_id = RecoveryId::try_from(rec_id).map_err(|_| ())?;
 
     let message = <Scalar as Reduce<crypto::k256::U256>>::reduce_bytes(
-        &bits2field::<crypto::k256::Secp256k1>(digest).map_err(|_| {
-            uart_log::write_str("[ecrecover_inner] OUTPUT: Error - bits2field failed\n");
-        })?,
+        &bits2field::<crypto::k256::Secp256k1>(digest).map_err(|_| ())?,
     );
 
-    // Log encoded message scalar
-    uart_log::write_str("[ecrecover_inner] Encoded message scalar: ");
-    uart_log::write_hex_slice(message.to_bytes().as_slice());
-    uart_log::newline();
-
-    uart_log::write_str("[ecrecover_inner] calling recover()\n");
     let Ok(pk) = crypto::secp256k1::recover(&message, &signature, &recovery_id) else {
-        uart_log::write_str("[ecrecover_inner] OUTPUT: Error - recovery failed\n");
         return Err(());
     };
-    uart_log::write_str("[ecrecover_inner] recover() returned successfully\n");
 
-    // represent as bytes, and we do not need compression
-    uart_log::write_str("[ecrecover_inner] calling to_encoded_point(false)\n");
-    let encoded = pk.to_encoded_point(false);
-    uart_log::write_str("[ecrecover_inner] to_encoded_point returned\n");
+    // Use write_uncompressed_bytes which writes directly to the output buffer
+    // using volatile operations to avoid compiler optimization issues on RISC-V
+    pk.write_uncompressed_bytes(out);
 
-    // Log output
-    uart_log::write_str("[ecrecover_inner] OUTPUT: Success - encoded_point=");
-    uart_log::write_hex_slice(encoded.as_bytes());
-    uart_log::newline();
-
-    Ok(encoded)
+    Ok(())
 }
 
 #[cfg(test)]

@@ -1,9 +1,27 @@
 use super::*;
 use oracle_provider::OracleQueryProcessor;
+use std::sync::Mutex;
 use zk_ee::{
     oracle::query_ids::UART_QUERY_ID,
     oracle::usize_serialization::dyn_usize_iterator::DynUsizeIterator,
 };
+
+/// Line buffer for accumulating output until newline
+static LINE_BUFFER: Mutex<String> = Mutex::new(String::new());
+
+/// Append text to the line buffer and flush complete lines with [GUEST] prefix
+fn append_and_flush(text: &str) {
+    let mut buffer = LINE_BUFFER.lock().unwrap();
+    for ch in text.chars() {
+        if ch == '\n' {
+            // Flush the line with prefix
+            eprintln!("[GUEST] {}", buffer);
+            buffer.clear();
+        } else {
+            buffer.push(ch);
+        }
+    }
+}
 
 /// This processor handles debug print requests from the RISC-V execution
 /// environment. It receives formatted string data and outputs it to stdout,
@@ -45,9 +63,8 @@ impl<M: MemorySource> OracleQueryProcessor<M> for UARTPrintResponder {
             .collect();
         assert!(string_bytes.len() >= message_len_in_bytes);
         string_bytes.truncate(message_len_in_bytes);
-        // Print with [GUEST] prefix for consistency with Zisk emulator
-        // Use eprint! (not eprintln!) since guest messages include newlines
-        eprint!("[GUEST] {}", String::from_utf8_lossy(&string_bytes));
+        // Append to line buffer and flush complete lines with [GUEST] prefix
+        append_and_flush(&String::from_utf8_lossy(&string_bytes));
 
         DynUsizeIterator::from_constructor((), UsizeSerializable::iter)
     }

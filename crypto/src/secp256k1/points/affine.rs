@@ -4,112 +4,6 @@ use crate::secp256k1::field::{FieldElement, FieldElementConst};
 
 use super::{jacobian::JacobianConst, AffineStorage, Jacobian};
 
-/// CSR-based QuasiUART for RISC-V guests
-#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
-mod uart_log {
-    const HELLO_MARKER: u32 = u32::MAX;
-    const BUF_SIZE: usize = 280;
-
-    static mut LINE_BUF: [u8; BUF_SIZE] = [0u8; BUF_SIZE];
-    static mut LINE_LEN: usize = 0;
-
-    #[inline(always)]
-    fn csr_write_word(word: usize) {
-        unsafe {
-            core::arch::asm!(
-                "csrrw x0, 0x7c0, {rd}",
-                rd = in(reg) word,
-                options(nomem, nostack, preserves_flags)
-            )
-        }
-    }
-
-    fn flush_buffer() {
-        unsafe {
-            let len = LINE_LEN;
-            if len == 0 {
-                return;
-            }
-            csr_write_word(HELLO_MARKER as usize);
-            csr_write_word(len.next_multiple_of(4) / 4 + 1);
-            csr_write_word(len);
-
-            let mut i = 0;
-            while i + 4 <= len {
-                let word = u32::from_le_bytes([LINE_BUF[i], LINE_BUF[i + 1], LINE_BUF[i + 2], LINE_BUF[i + 3]]);
-                csr_write_word(word as usize);
-                i += 4;
-            }
-            if i < len {
-                let mut buf = [0u8; 4];
-                for j in 0..(len - i) {
-                    buf[j] = LINE_BUF[i + j];
-                }
-                csr_write_word(u32::from_le_bytes(buf) as usize);
-            }
-        }
-    }
-
-    #[inline(never)]
-    pub fn write_str(s: &str) {
-        unsafe {
-            for b in s.bytes() {
-                if LINE_LEN < BUF_SIZE {
-                    LINE_BUF[LINE_LEN] = b;
-                    LINE_LEN += 1;
-                }
-            }
-        }
-    }
-
-    #[inline(never)]
-    pub fn write_hex_byte(byte: u8) {
-        const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
-        unsafe {
-            if LINE_LEN < BUF_SIZE {
-                LINE_BUF[LINE_LEN] = HEX_CHARS[(byte >> 4) as usize];
-                LINE_LEN += 1;
-            }
-            if LINE_LEN < BUF_SIZE {
-                LINE_BUF[LINE_LEN] = HEX_CHARS[(byte & 0xf) as usize];
-                LINE_LEN += 1;
-            }
-        }
-    }
-
-    #[inline(never)]
-    pub fn write_hex_slice(bytes: &[u8]) {
-        write_str("0x");
-        for b in bytes {
-            write_hex_byte(*b);
-        }
-    }
-
-    #[inline(never)]
-    pub fn newline() {
-        unsafe {
-            if LINE_LEN < BUF_SIZE {
-                LINE_BUF[LINE_LEN] = b'\n';
-                LINE_LEN += 1;
-            }
-            flush_buffer();
-            LINE_LEN = 0;
-        }
-    }
-}
-
-#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
-mod uart_log {
-    #[inline(always)]
-    pub fn write_str(_s: &str) {}
-    #[inline(always)]
-    pub fn write_hex_byte(_byte: u8) {}
-    #[inline(always)]
-    pub fn write_hex_slice(_bytes: &[u8]) {}
-    #[inline(always)]
-    pub fn newline() {}
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AffineConst {
     pub(crate) x: FieldElementConst,
@@ -330,35 +224,78 @@ impl Affine {
     }
 
     pub fn to_encoded_point(self, compress: bool) -> EncodedPoint {
-        use crate::k256::elliptic_curve::subtle::ConditionallySelectable;
-
-        uart_log::write_str("[affine.to_encoded_point] computing x.to_bytes()\n");
         let x_bytes = self.x.to_bytes();
-        uart_log::write_str("[affine.to_encoded_point] x_bytes: ");
-        uart_log::write_hex_slice(&x_bytes);
-        uart_log::newline();
-
-        uart_log::write_str("[affine.to_encoded_point] computing y.to_bytes()\n");
         let y_bytes = self.y.to_bytes();
-        uart_log::write_str("[affine.to_encoded_point] y_bytes: ");
-        uart_log::write_hex_slice(&y_bytes);
-        uart_log::newline();
 
-        uart_log::write_str("[affine.to_encoded_point] is_infinity: ");
-        uart_log::write_hex_byte(self.is_infinity() as u8);
-        uart_log::newline();
+        // Manually construct encoded point bytes using volatile writes to prevent
+        // compiler optimization issues on RISC-V
+        if self.is_infinity() {
+            EncodedPoint::identity()
+        } else if compress {
+            // Compressed format: 0x02/0x03 + 32 bytes x
+            let mut buf = [0u8; 33];
+            let tag = if self.y.is_odd() { 0x03u8 } else { 0x02u8 };
+            unsafe {
+                core::ptr::write_volatile(&mut buf[0], tag);
+                for i in 0..32 {
+                    core::ptr::write_volatile(&mut buf[1 + i], x_bytes[i]);
+                }
+            }
+            EncodedPoint::from_bytes(&buf).expect("valid compressed point")
+        } else {
+            // Uncompressed format: 0x04 + 32 bytes x + 32 bytes y
+            let mut buf = [0u8; 65];
+            unsafe {
+                core::ptr::write_volatile(&mut buf[0], 0x04u8);
+                for i in 0..32 {
+                    core::ptr::write_volatile(&mut buf[1 + i], x_bytes[i]);
+                }
+                for i in 0..32 {
+                    core::ptr::write_volatile(&mut buf[33 + i], y_bytes[i]);
+                }
+            }
+            EncodedPoint::from_bytes(&buf).expect("valid uncompressed point")
+        }
+    }
 
-        let result = EncodedPoint::conditional_select(
-            &EncodedPoint::from_affine_coordinates(&x_bytes, &y_bytes, compress),
-            &EncodedPoint::identity(),
-            Choice::from(self.is_infinity() as u8),
-        );
+    /// Writes the uncompressed SEC1-encoded point to the output buffer.
+    /// Uses volatile writes throughout to prevent compiler optimization issues on RISC-V.
+    /// Format: 0x04 || x (32 bytes) || y (32 bytes)
+    /// Writes all zeros if this is the point at infinity.
+    pub fn write_uncompressed_bytes(self, out: &mut [u8; 65]) {
+        if self.is_infinity() {
+            unsafe {
+                for i in 0..65 {
+                    core::ptr::write_volatile(&mut out[i], 0u8);
+                }
+            }
+            return;
+        }
 
-        uart_log::write_str("[affine.to_encoded_point] result: ");
-        uart_log::write_hex_slice(result.as_bytes());
-        uart_log::newline();
+        // Write tag byte with volatile
+        unsafe {
+            core::ptr::write_volatile(&mut out[0], 0x04u8);
+        }
 
-        result
+        // Write x and y bytes directly to output buffer
+        // This avoids intermediate local arrays that get corrupted on return
+        // Use split_at_mut to avoid borrow checker issues
+        let (_, rest) = out.split_at_mut(1);
+        let (x_part, y_part) = rest.split_at_mut(32);
+        let x_slice: &mut [u8; 32] = x_part.try_into().unwrap();
+        let y_slice: &mut [u8; 32] = y_part.try_into().unwrap();
+        self.x.write_bytes_to(x_slice);
+        self.y.write_bytes_to(y_slice);
+    }
+
+    /// Returns the uncompressed SEC1-encoded point as raw bytes.
+    /// Uses volatile writes throughout to prevent compiler optimization issues on RISC-V.
+    /// Returns `[u8; 65]` with format: 0x04 || x (32 bytes) || y (32 bytes)
+    /// Returns all zeros if this is the point at infinity.
+    pub fn to_uncompressed_bytes(self) -> [u8; 65] {
+        let mut buf = [0u8; 65];
+        self.write_uncompressed_bytes(&mut buf);
+        buf
     }
 
     pub fn to_bytes(self) -> CompressedPoint {

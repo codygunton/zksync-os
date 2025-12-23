@@ -259,6 +259,13 @@ impl FieldElement {
         self.0.to_bytes()
     }
 
+    /// Writes the field element bytes directly to the output slice.
+    /// Uses volatile writes to prevent compiler optimization issues on riscv64.
+    pub(crate) fn write_bytes_to(mut self, out: &mut [u8; 32]) {
+        self.normalize_in_place();
+        self.0.write_bytes_to(out)
+    }
+
     #[cfg(test)]
     pub(crate) const fn to_storage(self) -> FieldStorage {
         FieldStorage(self.0.to_storage())

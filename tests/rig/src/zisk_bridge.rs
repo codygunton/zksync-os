@@ -99,7 +99,7 @@ impl ZiskOracleBridge {
         let count = ORACLE_OP_COUNT.fetch_add(1, Ordering::Relaxed);
         // Log every 100000 operations to track progress (suppressed by ZISK_QUIET=1)
         if count % 100000 == 0 && !is_quiet() {
-            eprintln!("[oracle] op={} read -> 0x{:08x}", count, value);
+            // eprintln!("[oracle] op={} read -> 0x{:08x}", count, value);
         }
         value
     }
@@ -117,7 +117,7 @@ impl ZiskOracleBridge {
         // Log writes that look like query IDs (high nibble 0x4) or every 100000 ops
         // Suppressed by ZISK_QUIET=1
         if !is_quiet() && ((value & 0xF0000000) == 0x40000000 || count % 100000 == 0) {
-            eprintln!("[oracle] op={} write 0x{:08x}", count, value);
+            // eprintln!("[oracle] op={} write 0x{:08x}", count, value);
         }
         oracle.write_with_memory_access(&DummyMemorySource, value);
     }
