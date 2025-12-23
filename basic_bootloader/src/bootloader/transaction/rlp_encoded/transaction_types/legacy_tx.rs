@@ -199,6 +199,10 @@ impl LegacyPayloadParser {
             hasher.finalize_reset().into()
         };
 
+        uart_log::write_str("[legacy_tx] computed sig_hash=");
+        uart_log::write_hex_slice(&sig_hash.as_u8_array());
+        uart_log::newline();
+
         Ok((legacy_inner, legacy_signature, sig_hash))
     }
 }
