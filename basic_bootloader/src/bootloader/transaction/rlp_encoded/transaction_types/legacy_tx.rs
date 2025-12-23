@@ -10,6 +10,72 @@ use crate::bootloader::transaction::rlp_encoded::rlp::{
 use ruint::aliases::U256;
 use zk_ee::utils::Bytes32;
 
+/// CSR-based QuasiUART for RISC-V guests
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+mod uart_log {
+    use arrayvec::ArrayString;
+    const HELLO_MARKER: u32 = u32::MAX;
+    const BUF_SIZE: usize = 512;
+    static mut LINE_BUF: ArrayString<BUF_SIZE> = ArrayString::new_const();
+
+    #[inline(always)]
+    fn csr_write_word(word: usize) {
+        unsafe {
+            core::arch::asm!(
+                "csrrw x0, 0x7c0, {rd}",
+                rd = in(reg) word,
+                options(nomem, nostack, preserves_flags)
+            )
+        }
+    }
+
+    fn flush_buffer(s: &str) {
+        let len = s.len();
+        if len == 0 { return; }
+        csr_write_word(HELLO_MARKER as usize);
+        csr_write_word(len.next_multiple_of(4) / 4 + 1);
+        csr_write_word(len);
+        let bytes = s.as_bytes();
+        let mut i = 0;
+        while i + 4 <= len {
+            let word = u32::from_le_bytes([bytes[i], bytes[i+1], bytes[i+2], bytes[i+3]]);
+            csr_write_word(word as usize);
+            i += 4;
+        }
+        if i < len {
+            let mut buf = [0u8; 4];
+            for j in 0..(len - i) { buf[j] = bytes[i + j]; }
+            csr_write_word(u32::from_le_bytes(buf) as usize);
+        }
+    }
+
+    #[inline(never)] pub fn write_str(s: &str) { unsafe { let _ = LINE_BUF.try_push_str(s); } }
+    #[inline(never)] pub fn write_usize(mut val: usize) {
+        if val == 0 { unsafe { let _ = LINE_BUF.try_push('0'); } return; }
+        let mut digits = [0u8; 20]; let mut i = 0;
+        while val > 0 { digits[i] = (val % 10) as u8; val /= 10; i += 1; }
+        while i > 0 { i -= 1; unsafe { let _ = LINE_BUF.try_push((b'0' + digits[i]) as char); } }
+    }
+    #[inline(never)] pub fn write_hex_byte(byte: u8) {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        unsafe { let _ = LINE_BUF.try_push(HEX[(byte >> 4) as usize] as char);
+                 let _ = LINE_BUF.try_push(HEX[(byte & 0xf) as usize] as char); }
+    }
+    #[inline(never)] pub fn write_hex_slice(bytes: &[u8]) {
+        write_str("0x"); for b in bytes { write_hex_byte(*b); }
+    }
+    #[inline(never)] pub fn newline() { unsafe { let _ = LINE_BUF.try_push('\n'); flush_buffer(&LINE_BUF); LINE_BUF.clear(); } }
+}
+
+#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
+mod uart_log {
+    #[inline(always)] pub fn write_str(_: &str) {}
+    #[inline(always)] pub fn write_usize(_: usize) {}
+    #[inline(always)] pub fn write_hex_byte(_: u8) {}
+    #[inline(always)] pub fn write_hex_slice(_: &[u8]) {}
+    #[inline(always)] pub fn newline() {}
+}
+
 /// Legacy (type 0x00) inner payload used for signing:
 /// [nonce, gasPrice, gasLimit, to, value, data]
 /// `to` must be empty for contract creation or exactly 20 bytes for a call.
@@ -65,6 +131,12 @@ impl LegacyPayloadParser {
         src: &'a [u8],
         expected_chain_id: u64,
     ) -> Result<(LegacyTXInner<'a>, LegacySignatureData<'a>, Bytes32), TxError> {
+        uart_log::write_str("[legacy_tx] src.len=");
+        uart_log::write_usize(src.len());
+        uart_log::write_str(" src=");
+        uart_log::write_hex_slice(src);
+        uart_log::newline();
+
         // Legacy path: input must be a single list with 9 elements total.
         let mut outer = Rlp::new(src).list()?;
 
@@ -73,10 +145,25 @@ impl LegacyPayloadParser {
         let legacy_inner: LegacyTXInner<'a> = LegacyTXInner::decode_list_body(&mut outer)?;
         let inner_slice = outer.consumed_since(mark);
 
+        uart_log::write_str("[legacy_tx] inner_slice.len=");
+        uart_log::write_usize(inner_slice.len());
+        uart_log::newline();
+        uart_log::write_str("[legacy_tx] inner_slice=0x");
+        for b in inner_slice {
+            uart_log::write_hex_byte(*b);
+        }
+        uart_log::newline();
+
         let legacy_signature = LegacySignatureData::decode_list_body(&mut outer)?;
         if !outer.is_empty() {
             return Err(InvalidTransaction::InvalidStructure.into());
         }
+
+        uart_log::write_str("[legacy_tx] is_eip155=");
+        uart_log::write_usize(legacy_signature.is_eip155() as usize);
+        uart_log::write_str(" v=");
+        uart_log::write_usize(legacy_signature.v as usize);
+        uart_log::newline();
 
         let sig_hash: Bytes32 = if legacy_signature.is_eip155() == false {
             // Unprotected legacy
@@ -95,9 +182,15 @@ impl LegacyPayloadParser {
             let chain_id = expected_chain_id;
             let chain_id_encoding_len = u64_encoding_len(chain_id);
 
+            uart_log::write_str("[legacy_tx] eip155 chain_id=");
+            uart_log::write_usize(chain_id as usize);
+            uart_log::write_str(" len=");
+            uart_log::write_usize(chain_id_encoding_len);
+            uart_log::newline();
+
             let mut hasher = crypto::sha3::Keccak256::new();
             apply_list_concatenation_encoding_to_hash(
-                (inner_slice.len() + chain_id_encoding_len + 2) as u32, // 0x80, 0x80 for r/s
+                (inner_slice.len() + chain_id_encoding_len + 2) as u32,
                 &mut hasher,
             );
             hasher.update(inner_slice);

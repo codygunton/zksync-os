@@ -6,6 +6,186 @@ use zk_ee::system::base_system_functions::{Secp256k1ECRecoverErrors, SystemFunct
 use zk_ee::system::errors::{subsystem::SubsystemError, system::SystemError};
 use zk_ee::system::Computational;
 
+/// CSR-based QuasiUART for RISC-V guests (both Airbender and Zisk)
+/// Uses CSR 0x7c0 with the QuasiUART protocol for unified logging.
+/// Buffers entire lines to produce clean output with single [GUEST] prefix.
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+pub mod uart_log {
+    use arrayvec::ArrayString;
+
+    const HELLO_MARKER: u32 = u32::MAX; // 0xffffffff = UART_QUERY_ID
+    // Buffer size: enough for longest log line
+    const BUF_SIZE: usize = 512;
+
+    // Single-threaded guest buffer
+    static mut LINE_BUF: ArrayString<BUF_SIZE> = ArrayString::new_const();
+
+    #[inline(always)]
+    fn csr_write_word(word: usize) {
+        unsafe {
+            core::arch::asm!(
+                "csrrw x0, 0x7c0, {rd}",
+                rd = in(reg) word,
+                options(nomem, nostack, preserves_flags)
+            )
+        }
+    }
+
+    fn flush_buffer(s: &str) {
+        let len = s.len();
+        if len == 0 {
+            return;
+        }
+        // QuasiUART protocol:
+        // 1. Write HELLO_MARKER (0xffffffff)
+        // 2. Write word count (ceil(len/4) + 1 for length word)
+        // 3. Write message length in bytes
+        // 4. Write message data as 4-byte LE words
+        csr_write_word(HELLO_MARKER as usize);
+        csr_write_word(len.next_multiple_of(4) / 4 + 1);
+        csr_write_word(len);
+
+        // Write bytes in 4-byte words
+        let bytes = s.as_bytes();
+        let mut i = 0;
+        while i + 4 <= len {
+            let word = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+            csr_write_word(word as usize);
+            i += 4;
+        }
+
+        // Flush remaining bytes (padded with zeros)
+        if i < len {
+            let mut buf = [0u8; 4];
+            for j in 0..(len - i) {
+                buf[j] = bytes[i + j];
+            }
+            csr_write_word(u32::from_le_bytes(buf) as usize);
+        }
+    }
+
+    #[inline(never)]
+    pub fn write_str(s: &str) {
+        unsafe {
+            let _ = LINE_BUF.try_push_str(s);
+        }
+    }
+
+    #[inline(never)]
+    pub fn write_u8(val: u8) {
+        // Write decimal representation
+        if val >= 100 {
+            unsafe {
+                let _ = LINE_BUF.try_push((b'0' + val / 100) as char);
+            }
+        }
+        if val >= 10 {
+            unsafe {
+                let _ = LINE_BUF.try_push((b'0' + (val / 10) % 10) as char);
+            }
+        }
+        unsafe {
+            let _ = LINE_BUF.try_push((b'0' + val % 10) as char);
+        }
+    }
+
+    #[inline(never)]
+    pub fn write_usize(mut val: usize) {
+        if val == 0 {
+            unsafe {
+                let _ = LINE_BUF.try_push('0');
+            }
+            return;
+        }
+        // Buffer for digits (max 20 digits for u64)
+        let mut digits = [0u8; 20];
+        let mut i = 0;
+        while val > 0 {
+            digits[i] = (val % 10) as u8;
+            val /= 10;
+            i += 1;
+        }
+        // Write digits in reverse
+        while i > 0 {
+            i -= 1;
+            unsafe {
+                let _ = LINE_BUF.try_push((b'0' + digits[i]) as char);
+            }
+        }
+    }
+
+    #[inline(never)]
+    pub fn write_hex_byte(byte: u8) {
+        const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+        unsafe {
+            let _ = LINE_BUF.try_push(HEX_CHARS[(byte >> 4) as usize] as char);
+            let _ = LINE_BUF.try_push(HEX_CHARS[(byte & 0xf) as usize] as char);
+        }
+    }
+
+    #[inline(never)]
+    pub fn write_hex_32(bytes: &[u8; 32]) {
+        write_str("0x");
+        for b in bytes {
+            write_hex_byte(*b);
+        }
+    }
+
+    #[inline(never)]
+    pub fn write_hex_slice(bytes: &[u8]) {
+        write_str("0x");
+        for b in bytes {
+            write_hex_byte(*b);
+        }
+    }
+
+    #[inline(never)]
+    pub fn newline() {
+        unsafe {
+            let _ = LINE_BUF.try_push('\n');
+            flush_buffer(&LINE_BUF);
+            LINE_BUF.clear();
+        }
+    }
+}
+
+/// No-op stub for non-RISC-V targets (host builds, benchmarks, etc.)
+#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
+pub mod uart_log {
+    #[inline(always)]
+    pub fn write_str(_s: &str) {}
+    #[inline(always)]
+    pub fn write_u8(_val: u8) {}
+    #[inline(always)]
+    pub fn write_usize(_val: usize) {}
+    #[inline(always)]
+    pub fn write_hex_byte(_byte: u8) {}
+    #[inline(always)]
+    pub fn write_hex_32(_bytes: &[u8; 32]) {}
+    #[inline(always)]
+    pub fn write_hex_slice(_bytes: &[u8]) {}
+    #[inline(always)]
+    pub fn newline() {}
+}
+
+/// Global transaction counter for debugging
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+static mut TX_COUNTER: usize = 0;
+
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+pub fn get_and_increment_tx_counter() -> usize {
+    unsafe {
+        let val = TX_COUNTER;
+        TX_COUNTER += 1;
+        val
+    }
+}
+
+#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
+pub fn get_and_increment_tx_counter() -> usize {
+    0
+}
+
 ///
 /// ecrecover system function implementation.
 ///
@@ -38,6 +218,8 @@ fn ecrecover_as_system_function_inner<
     dst: &mut D,
     resources: &mut R,
 ) -> Result<(), SystemError> {
+    let tx_num = get_and_increment_tx_counter();
+
     resources.charge(&R::from_ergs_and_native(
         ECRECOVER_COST_ERGS,
         R::Native::from_computational(ECRECOVER_NATIVE_COST),
@@ -67,25 +249,94 @@ fn ecrecover_as_system_function_inner<
         let r = it.next().unwrap_unchecked();
         let s = it.next().unwrap_unchecked();
 
+        // Log inputs for debugging
+        uart_log::write_str("[ecrecover] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" INPUT digest=");
+        uart_log::write_hex_32(digest);
+        uart_log::newline();
+
+        uart_log::write_str("[ecrecover] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" INPUT r=");
+        uart_log::write_hex_32(r);
+        uart_log::newline();
+
+        uart_log::write_str("[ecrecover] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" INPUT s=");
+        uart_log::write_hex_32(s);
+        uart_log::newline();
+
+        uart_log::write_str("[ecrecover] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" INPUT v[31]=");
+        uart_log::write_u8(v[31]);
+        uart_log::newline();
+
         if v[..31].iter().all(|el| *el == 0) == false {
+            uart_log::write_str("[ecrecover] TX#");
+            uart_log::write_usize(tx_num);
+            uart_log::write_str(" EARLY_EXIT: v prefix non-zero");
+            uart_log::newline();
             return Ok(());
         }
 
         let rec_id = v[31].wrapping_sub(27);
 
+        uart_log::write_str("[ecrecover] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" rec_id=");
+        uart_log::write_u8(rec_id);
+        uart_log::newline();
+
         if (rec_id == 0 || rec_id == 1) == false {
+            uart_log::write_str("[ecrecover] TX#");
+            uart_log::write_usize(tx_num);
+            uart_log::write_str(" EARLY_EXIT: invalid rec_id");
+            uart_log::newline();
             return Ok(());
         }
 
-        ecrecover_inner(digest, r, s, rec_id, &mut pk_bytes).is_ok()
+        ecrecover_inner(digest, r, s, rec_id, &mut pk_bytes, tx_num).is_ok()
     };
 
     if !success {
+        uart_log::write_str("[ecrecover] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" FAILED: ecrecover_inner returned error");
+        uart_log::newline();
         return Ok(());
     }
 
-    use crypto::sha3::{Digest, Keccak256};
-    let address_hash = Keccak256::digest(&pk_bytes[1..]);
+    // Log pk_bytes output
+    uart_log::write_str("[ecrecover] TX#");
+    uart_log::write_usize(tx_num);
+    uart_log::write_str(" pk_bytes[0]=");
+    uart_log::write_hex_byte(pk_bytes[0]);
+    uart_log::newline();
+
+    uart_log::write_str("[ecrecover] TX#");
+    uart_log::write_usize(tx_num);
+    uart_log::write_str(" pk_bytes[1..33]=");
+    uart_log::write_hex_slice(&pk_bytes[1..33]);
+    uart_log::newline();
+
+    uart_log::write_str("[ecrecover] TX#");
+    uart_log::write_usize(tx_num);
+    uart_log::write_str(" pk_bytes[33..65]=");
+    uart_log::write_hex_slice(&pk_bytes[33..65]);
+    uart_log::newline();
+
+    use crypto::MiniDigest;
+    let address_hash = <crypto::sha3::Keccak256 as MiniDigest>::digest(&pk_bytes[1..]);
+
+    // Log the final address
+    uart_log::write_str("[ecrecover] TX#");
+    uart_log::write_usize(tx_num);
+    uart_log::write_str(" address=");
+    uart_log::write_hex_slice(&address_hash[12..]);
+    uart_log::newline();
 
     dst.try_extend(core::iter::repeat_n(0, 12).chain(address_hash.into_iter().skip(12)))
         .map_err(|_| out_of_return_memory!())?;
@@ -101,6 +352,7 @@ pub fn ecrecover_inner(
     s: &[u8; 32],
     rec_id: u8,
     out: &mut [u8; 65],
+    tx_num: usize,
 ) -> Result<(), ()> {
     use crypto::k256::{
         ecdsa::{hazmat::bits2field, RecoveryId, Signature},
@@ -108,20 +360,81 @@ pub fn ecrecover_inner(
         Scalar,
     };
 
-    let signature = Signature::from_scalars(*r, *s).map_err(|_| ())?;
-    let recovery_id = RecoveryId::try_from(rec_id).map_err(|_| ())?;
+    uart_log::write_str("[ecrecover_inner] TX#");
+    uart_log::write_usize(tx_num);
+    uart_log::write_str(" creating signature from r,s");
+    uart_log::newline();
+
+    let signature = Signature::from_scalars(*r, *s).map_err(|_| {
+        uart_log::write_str("[ecrecover_inner] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" ERROR: from_scalars failed");
+        uart_log::newline();
+    })?;
+
+    let recovery_id = RecoveryId::try_from(rec_id).map_err(|_| {
+        uart_log::write_str("[ecrecover_inner] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" ERROR: invalid recovery_id");
+        uart_log::newline();
+    })?;
+
+    uart_log::write_str("[ecrecover_inner] TX#");
+    uart_log::write_usize(tx_num);
+    uart_log::write_str(" computing message scalar from digest");
+    uart_log::newline();
 
     let message = <Scalar as Reduce<crypto::k256::U256>>::reduce_bytes(
-        &bits2field::<crypto::k256::Secp256k1>(digest).map_err(|_| ())?,
+        &bits2field::<crypto::k256::Secp256k1>(digest).map_err(|_| {
+            uart_log::write_str("[ecrecover_inner] TX#");
+            uart_log::write_usize(tx_num);
+            uart_log::write_str(" ERROR: bits2field failed");
+            uart_log::newline();
+        })?,
     );
 
-    let Ok(pk) = crypto::secp256k1::recover(&message, &signature, &recovery_id) else {
+    // Log the message scalar bytes
+    let msg_bytes = message.to_bytes();
+    uart_log::write_str("[ecrecover_inner] TX#");
+    uart_log::write_usize(tx_num);
+    uart_log::write_str(" message_scalar=");
+    uart_log::write_hex_slice(msg_bytes.as_slice());
+    uart_log::newline();
+
+    uart_log::write_str("[ecrecover_inner] TX#");
+    uart_log::write_usize(tx_num);
+    uart_log::write_str(" calling crypto::secp256k1::recover");
+    uart_log::newline();
+
+    let Ok(pk) = crypto::secp256k1::recover_with_logging(&message, &signature, &recovery_id, tx_num) else {
+        uart_log::write_str("[ecrecover_inner] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" ERROR: recover failed");
+        uart_log::newline();
         return Err(());
     };
 
+    uart_log::write_str("[ecrecover_inner] TX#");
+    uart_log::write_usize(tx_num);
+    uart_log::write_str(" calling pk.write_uncompressed_bytes_with_logging");
+    uart_log::newline();
+
     // Use write_uncompressed_bytes which writes directly to the output buffer
     // using volatile operations to avoid compiler optimization issues on RISC-V
-    pk.write_uncompressed_bytes(out);
+    pk.write_uncompressed_bytes_with_logging(out, tx_num);
+
+    // Log what was written
+    uart_log::write_str("[ecrecover_inner] TX#");
+    uart_log::write_usize(tx_num);
+    uart_log::write_str(" after write, out[0]=");
+    uart_log::write_hex_byte(out[0]);
+    uart_log::newline();
+
+    uart_log::write_str("[ecrecover_inner] TX#");
+    uart_log::write_usize(tx_num);
+    uart_log::write_str(" after write, out[1..9]=");
+    uart_log::write_hex_slice(&out[1..9]);
+    uart_log::newline();
 
     Ok(())
 }
