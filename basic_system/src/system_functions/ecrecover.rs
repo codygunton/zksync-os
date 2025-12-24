@@ -226,14 +226,17 @@ fn ecrecover_as_system_function_inner<
     ))?;
     // digest, v, r, s in ABI
     let mut buffer = [0u8; 128];
-    // Use volatile writes to prevent compiler optimization issues on riscv64
+    // WORKAROUND: Use volatile reads AND writes to prevent compiler optimization issues on riscv64.
+    // Normal reads from input buffer memory (EVM heap) produce corrupted data on ZisK.
+    // See ai_plans/riscv-compiler-bugs.md for details.
     let mut idx = 0usize;
     for byte in src.iter() {
         if idx >= 128 {
             break;
         }
         unsafe {
-            core::ptr::write_volatile(&mut buffer[idx], *byte);
+            let b = core::ptr::read_volatile(byte);
+            core::ptr::write_volatile(&mut buffer[idx], b);
         }
         idx += 1;
     }
