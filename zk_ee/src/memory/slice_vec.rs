@@ -80,8 +80,13 @@ impl<T: Clone> SliceVec<'_, T> {
         }
 
         if new_length > self.length {
+            // Use volatile writes to work around RV64 compiler optimization bugs
+            // See ai_plans/riscv-compiler-bugs.md for details
             for x in &mut self.memory[self.length..new_length] {
-                x.write(padding.clone());
+                unsafe {
+                    let ptr = x.as_mut_ptr();
+                    core::ptr::write_volatile(ptr, padding.clone());
+                }
             }
         }
         if new_length < self.length {

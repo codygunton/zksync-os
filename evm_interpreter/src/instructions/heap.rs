@@ -14,9 +14,14 @@ impl<S: EthereumLikeTypes> Interpreter<'_, S> {
         Self::resize_heap_implementation(&mut self.heap, &mut self.gas, index, 32)?;
         let mut value: ruint::Uint<256, 4> = U256::ZERO;
         unsafe {
+            // Use volatile reads to work around RV64 compiler optimization bugs
+            // See ai_plans/riscv-compiler-bugs.md for details
             let src = self.heap.deref_mut().as_ptr().add(index);
             let dst = value.as_le_slice_mut().as_mut_ptr();
-            core::ptr::copy_nonoverlapping(src, dst, 32);
+            for i in 0..32 {
+                let byte = core::ptr::read_volatile(src.add(i));
+                core::ptr::write_volatile(dst.add(i), byte);
+            }
             crate::utils::bytereverse_u256(&mut value);
         }
 
@@ -42,9 +47,14 @@ impl<S: EthereumLikeTypes> Interpreter<'_, S> {
 
         unsafe {
             crate::utils::bytereverse_u256(&mut le_value);
+            // Use volatile writes to work around RV64 compiler optimization bugs
+            // See ai_plans/riscv-compiler-bugs.md for details
             let src = le_value.as_le_slice().as_ptr();
             let dst = self.heap().as_mut_ptr().add(index);
-            core::ptr::copy_nonoverlapping(src, dst, 32);
+            for i in 0..32 {
+                let byte = core::ptr::read_volatile(src.add(i));
+                core::ptr::write_volatile(dst.add(i), byte);
+            }
         }
 
         if Self::PRINT_OPCODES {
@@ -99,11 +109,25 @@ impl<S: EthereumLikeTypes> Interpreter<'_, S> {
         let dst_offset = Self::cast_to_usize(&dst_offset, EvmError::InvalidOperandOOG.into())?;
         let src_offset = Self::cast_to_usize(&src_offset, EvmError::InvalidOperandOOG.into())?;
         self.resize_heap(core::cmp::max(dst_offset, src_offset), len)?;
+        // Use volatile copy to work around RV64 compiler optimization bugs
+        // Note: This handles overlapping regions by copying byte-by-byte
+        // which is correct but slower than memmove for large regions
         unsafe {
             let src_ptr = self.heap().as_ptr().add(src_offset);
             let dst_ptr = self.heap().as_mut_ptr().add(dst_offset);
-            // Potentially overlapping
-            core::ptr::copy(src_ptr, dst_ptr, len);
+            if dst_offset <= src_offset {
+                // Copy forward
+                for i in 0..len {
+                    let byte = core::ptr::read_volatile(src_ptr.add(i));
+                    core::ptr::write_volatile(dst_ptr.add(i), byte);
+                }
+            } else {
+                // Copy backward to handle overlapping regions correctly
+                for i in (0..len).rev() {
+                    let byte = core::ptr::read_volatile(src_ptr.add(i));
+                    core::ptr::write_volatile(dst_ptr.add(i), byte);
+                }
+            }
         }
 
         Ok(())

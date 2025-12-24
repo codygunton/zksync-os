@@ -44,10 +44,10 @@ fn keccak256_as_system_function_inner<D: ?Sized + TryExtend<u8>, R: Resources>(
     let native_cost = keccak256_native_cost::<R>(src.len());
     resources.charge(&R::from_ergs_and_native(ergs_cost, native_cost))?;
 
-    use crypto::sha3::*;
-    let mut hasher = Keccak256::new();
-    hasher.update(src);
-    let hash = hasher.finalize();
+    // Use MiniDigest trait which has volatile read workarounds for RV64
+    // See crypto/src/sha3/mod.rs for details
+    use crypto::MiniDigest;
+    let hash = crypto::sha3::Keccak256::digest(src);
 
     dst.try_extend(hash).map_err(|_| out_of_return_memory!())?;
 

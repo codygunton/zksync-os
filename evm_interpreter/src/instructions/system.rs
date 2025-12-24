@@ -116,12 +116,15 @@ impl<S: EthereumLikeTypes> Interpreter<'_, S> {
                 if index < self.calldata.len() {
                     let have_bytes = 32.min(self.calldata.len() - index);
                     let mut bytes = Bytes32::ZERO;
+                    // Use volatile reads to work around RV64 compiler optimization bugs
+                    // See ai_plans/riscv-compiler-bugs.md for details
                     unsafe {
-                        core::ptr::copy_nonoverlapping(
-                            self.calldata.as_ptr().add(index),
-                            bytes.as_u8_array_mut().as_mut_ptr(),
-                            have_bytes,
-                        )
+                        let src = self.calldata.as_ptr().add(index);
+                        let dst = bytes.as_u8_array_mut().as_mut_ptr();
+                        for i in 0..have_bytes {
+                            let byte = core::ptr::read_volatile(src.add(i));
+                            core::ptr::write_volatile(dst.add(i), byte);
+                        }
                     }
                     bytes.into_u256_be()
                 } else {

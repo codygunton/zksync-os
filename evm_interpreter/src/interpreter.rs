@@ -94,10 +94,41 @@ pub enum CallScheme {
 
 impl<'ee, S: EthereumLikeTypes> Interpreter<'ee, S> {
     pub(crate) const PRINT_OPCODES: bool = false;
+    // Debug logging - disabled after TX76 fix
+    pub(crate) const DEBUG_INSTRUCTION_RANGE: bool = false;
+    pub(crate) const DEBUG_RANGE_START: usize = 0;
+    pub(crate) const DEBUG_RANGE_END: usize = 36;
 
     #[allow(dead_code)]
     pub(crate) fn stack_debug_print(&self, logger: &mut impl Logger) {
         self.stack.print_stack_content(logger);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn debug_log_instruction(
+        &self,
+        system: &mut System<S>,
+        cycles: usize,
+        opcode: u8,
+        ip_before: usize,
+    ) {
+        use zk_ee::system::evm::EvmStackInterface;
+        let op_name = crate::opcodes::OpCode::try_from_u8(opcode)
+            .map(|o| o.as_str())
+            .unwrap_or("UNKNOWN");
+        let _ = system.get_logger().write_fmt(format_args!(
+            "[DBG] cycle={} ip=0x{:04x} op=0x{:02x}({}) stack_depth={}\n",
+            cycles, ip_before, opcode, op_name, self.stack.len()
+        ));
+        // Log top 4 stack values
+        for i in 0..core::cmp::min(4, self.stack.len()) {
+            if let Ok(val) = self.stack.peek_n(i) {
+                let _ = system.get_logger().write_fmt(format_args!(
+                    "[DBG]   stack[{}] = 0x{:x}\n",
+                    i, val
+                ));
+            }
+        }
     }
 
     #[inline]
@@ -117,7 +148,16 @@ impl<'ee, S: EthereumLikeTypes> Interpreter<'ee, S> {
     ) -> Result<ExitCode, EvmSubsystemError> {
         let mut cycles = 0;
         let result = loop {
+            let ip_before = self.instruction_pointer;
             let opcode = self.get_bytecode_unchecked(self.instruction_pointer);
+
+            // Debug logging around divergence point
+            if Self::DEBUG_INSTRUCTION_RANGE
+                && cycles >= Self::DEBUG_RANGE_START
+                && cycles <= Self::DEBUG_RANGE_END
+            {
+                self.debug_log_instruction(system, cycles, opcode, ip_before);
+            }
 
             match crate::opcodes::OpCode::try_from_u8(opcode) {
                 Some(op) => {
@@ -309,6 +349,24 @@ impl<'ee, S: EthereumLikeTypes> Interpreter<'ee, S> {
 
             cycles += 1;
 
+            // Post-instruction logging for debugging (disabled - too verbose)
+            // if Self::DEBUG_INSTRUCTION_RANGE
+            //     && cycles >= Self::DEBUG_RANGE_START
+            //     && cycles <= Self::DEBUG_RANGE_END
+            // {
+            //     if let Err(ref exit_code) = result {
+            //         let _ = system.get_logger().write_fmt(format_args!(
+            //             "[DBG] cycle={} result=Err({:?}) new_ip=0x{:04x}\n",
+            //             cycles - 1, exit_code, self.instruction_pointer
+            //         ));
+            //     } else {
+            //         let _ = system.get_logger().write_fmt(format_args!(
+            //             "[DBG] cycle={} result=Ok new_ip=0x{:04x}\n",
+            //             cycles - 1, self.instruction_pointer
+            //         ));
+            //     }
+            // }
+
             if let Err(r) = result {
                 break r;
             }
@@ -318,6 +376,30 @@ impl<'ee, S: EthereumLikeTypes> Interpreter<'ee, S> {
             "Instructions executed = {}\nFinal instruction result = {:?}\n",
             cycles, &result
         ));
+
+        // Extra detailed logging when frame exits with suspiciously low instruction count
+        // TX76 investigation: Zisk exits at 36, Airbender at 72
+        if Self::DEBUG_INSTRUCTION_RANGE && cycles >= 30 && cycles <= 45 {
+            use zk_ee::system::evm::EvmStackInterface;
+            let _ = system.get_logger().write_fmt(format_args!(
+                "[DBG-EXIT] cycles={} result={:?} ip=0x{:04x} stack_depth={}\n",
+                cycles, &result, self.instruction_pointer, self.stack.len()
+            ));
+            // Log the remaining stack
+            for i in 0..core::cmp::min(8, self.stack.len()) {
+                if let Ok(val) = self.stack.peek_n(i) {
+                    let _ = system.get_logger().write_fmt(format_args!(
+                        "[DBG-EXIT]   stack[{}] = 0x{:x}\n",
+                        i, val
+                    ));
+                }
+            }
+            // Log returndata location if available
+            let _ = system.get_logger().write_fmt(format_args!(
+                "[DBG-EXIT]   returndata_location = {:?}\n",
+                self.returndata_location
+            ));
+        }
 
         Ok(result)
     }
@@ -439,12 +521,17 @@ impl<'ee, S: EthereumLikeTypes> Interpreter<'ee, S> {
         // NOTE: it's not "returndatacopy", but if there was a "call" that did set up non-empty buffer for returndata,
         // it'll be automatically copied there
         if !self.returndata_location.is_empty() {
+            // Use volatile reads/writes to work around RV64 compiler optimization bugs
+            // See ai_plans/riscv-compiler-bugs.md for details
             unsafe {
                 let to_copy =
                     core::cmp::min(returndata_region.len(), self.returndata_location.len());
                 let src = returndata_region.as_ptr();
                 let dst = self.heap.as_mut_ptr().add(self.returndata_location.start);
-                core::ptr::copy_nonoverlapping(src, dst, to_copy);
+                for i in 0..to_copy {
+                    let byte = core::ptr::read_volatile(src.add(i));
+                    core::ptr::write_volatile(dst.add(i), byte);
+                }
             }
         }
 
