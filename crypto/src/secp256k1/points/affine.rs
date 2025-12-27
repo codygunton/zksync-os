@@ -228,14 +228,22 @@ impl Affine {
         let len = x_bytes.as_slice().len();
         debug_assert!(len == 32);
 
+        // Use volatile reads to copy bytes to local buffer to prevent
+        // RISC-V 64-bit compiler optimization bugs
         #[allow(deprecated)]
-        let Some(x_array): Option<&[u8; 32]> = x_bytes.as_slice().try_into().ok() else {
-            return false;
-        };
+        let slice = x_bytes.as_slice();
+        let mut local_bytes = [0u8; 32];
+        for i in 0..32 {
+            unsafe {
+                local_bytes[i] = core::ptr::read_volatile(&slice[i]);
+            }
+        }
 
-        let Some(x) = FieldElement::from_bytes(x_array) else {
+        // Use from_bytes_to to avoid Copy trait corruption on RISC-V 64-bit
+        let mut x = FieldElement::ZERO;
+        if !FieldElement::from_bytes_to(&local_bytes, &mut x) {
             return false;
-        };
+        }
 
         // Use volatile writes to prevent compiler optimization issues
         unsafe {
@@ -260,7 +268,8 @@ impl Affine {
     }
 
     fn set_xo(&mut self, x: &FieldElement, y_is_odd: bool) -> bool {
-        self.y = *x;
+        // Use volatile copy to prevent RISC-V 64-bit compiler optimization bugs
+        self.y.volatile_copy_from(x);
         self.y.square_in_place();
         self.y *= x;
         self.y += 7;
@@ -272,7 +281,8 @@ impl Affine {
             self.y.negate_in_place(1);
         }
 
-        self.x = *x;
+        // Use volatile copy to prevent RISC-V 64-bit compiler optimization bugs
+        self.x.volatile_copy_from(x);
         self.infinity = false;
 
         ret
@@ -286,7 +296,8 @@ impl Affine {
         uart_log::write_hex_slice(&x.to_bytes());
         uart_log::newline();
 
-        self.y = *x;
+        // Use volatile copy to prevent RISC-V 64-bit compiler optimization bugs
+        self.y.volatile_copy_from(x);
         let y_after_assign = self.y.to_bytes();
         uart_log::write_str("[set_xo] TX#");
         uart_log::write_usize(tx_num);
@@ -355,7 +366,8 @@ impl Affine {
             uart_log::newline();
         }
 
-        self.x = *x;
+        // Use volatile copy to prevent RISC-V 64-bit compiler optimization bugs
+        self.x.volatile_copy_from(x);
         self.infinity = false;
 
         ret

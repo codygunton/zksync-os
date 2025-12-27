@@ -1,6 +1,6 @@
-// fe32_delegation: only used on riscv32 with bigint_ops (airbender CSR delegation)
+// fe32_delegation: used on riscv32/riscv64 with bigint_ops
 #[cfg(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     test,
     all(feature = "proving", fuzzing)
 ))]
@@ -11,10 +11,9 @@ mod fe64;
 use core::ops::MulAssign;
 
 cfg_if::cfg_if! {
-    // Only use bigint_ops delegation on riscv32 (airbender has CSR 0x7ca support)
-    // Zisk (riscv64) doesn't support CSR 0x7ca, so use pure Rust fe64
+    // Use bigint_ops delegation on riscv32/riscv64
     if #[cfg(any(
-        all(target_arch = "riscv32", feature = "bigint_ops"),
+        all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
         all(feature = "proving", fuzzing)
     ))] {
         pub(super) use fe32_delegation::FieldElement;
@@ -47,12 +46,65 @@ impl FieldElement {
     ]);
 
     pub(super) fn from_be_bytes(bytes: &[u8; 32]) -> Result<Self, Secp256r1Err> {
+        // Use volatile reads on RISC-V 64-bit to prevent compiler optimization bugs
+        #[cfg(target_arch = "riscv64")]
+        let val = Self::from_be_bytes_volatile(bytes);
+
+        #[cfg(not(target_arch = "riscv64"))]
         let val = Self::from_be_bytes_unchecked(bytes);
 
         if val.overflow() {
             Err(Secp256r1Err::InvalidFieldBytes)
         } else {
             Ok(val.to_representation())
+        }
+    }
+
+    /// Volatile-safe version of from_be_bytes for RISC-V 64-bit.
+    /// Uses volatile reads to prevent LLVM optimization bugs that corrupt data.
+    #[cfg(target_arch = "riscv64")]
+    #[inline(never)]
+    fn from_be_bytes_volatile(bytes: &[u8; 32]) -> Self {
+        unsafe {
+            let read = |i: usize| core::ptr::read_volatile(&bytes[i]);
+
+            let w0 = (read(31) as u64)
+                | ((read(30) as u64) << 8)
+                | ((read(29) as u64) << 16)
+                | ((read(28) as u64) << 24)
+                | ((read(27) as u64) << 32)
+                | ((read(26) as u64) << 40)
+                | ((read(25) as u64) << 48)
+                | ((read(24) as u64) << 56);
+
+            let w1 = (read(23) as u64)
+                | ((read(22) as u64) << 8)
+                | ((read(21) as u64) << 16)
+                | ((read(20) as u64) << 24)
+                | ((read(19) as u64) << 32)
+                | ((read(18) as u64) << 40)
+                | ((read(17) as u64) << 48)
+                | ((read(16) as u64) << 56);
+
+            let w2 = (read(15) as u64)
+                | ((read(14) as u64) << 8)
+                | ((read(13) as u64) << 16)
+                | ((read(12) as u64) << 24)
+                | ((read(11) as u64) << 32)
+                | ((read(10) as u64) << 40)
+                | ((read(9) as u64) << 48)
+                | ((read(8) as u64) << 56);
+
+            let w3 = (read(7) as u64)
+                | ((read(6) as u64) << 8)
+                | ((read(5) as u64) << 16)
+                | ((read(4) as u64) << 24)
+                | ((read(3) as u64) << 32)
+                | ((read(2) as u64) << 40)
+                | ((read(1) as u64) << 48)
+                | ((read(0) as u64) << 56);
+
+            Self::from_words_unchecked([w0, w1, w2, w3])
         }
     }
 
@@ -144,17 +196,17 @@ impl FieldElementConst {
 
     // When NOT using fe32_delegation (FieldElementConst == FieldElement == fe64)
     #[cfg(not(any(
-        all(target_arch = "riscv32", feature = "bigint_ops"),
+        all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
         all(feature = "proving", fuzzing)
     )))]
     pub(super) const fn to_fe(self) -> FieldElement {
         self
     }
 
-    // When using fe32_delegation (riscv32 with bigint_ops, or proving+fuzzing)
+    // When using fe32_delegation (riscv32/riscv64 with bigint_ops, or proving+fuzzing)
     // FieldElementConst is fe64 but FieldElement is fe32_delegation::FieldElement
     #[cfg(any(
-        all(target_arch = "riscv32", feature = "bigint_ops"),
+        all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
         all(feature = "proving", fuzzing)
     ))]
     pub(super) const fn to_fe(self) -> FieldElement {

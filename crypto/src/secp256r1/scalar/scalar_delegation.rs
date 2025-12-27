@@ -49,7 +49,8 @@ impl Scalar {
     }
 
     pub(crate) fn reduce_be_bytes(bytes: &[u8; 32]) -> Self {
-        Self::from_be_bytes_unchecked(bytes).to_repressentation()
+        // Use volatile reads to prevent RISC-V 64-bit compiler optimization bugs
+        Self(u256::from_bytes_volatile(bytes)).to_repressentation()
     }
 
     pub(super) fn from_be_bytes_unchecked(bytes: &[u8; 32]) -> Self {
@@ -57,7 +58,8 @@ impl Scalar {
     }
 
     pub(crate) fn from_be_bytes(bytes: &[u8; 32]) -> Result<Self, Secp256r1Err> {
-        let val = Self::from_be_bytes_unchecked(bytes);
+        // Use volatile reads to prevent RISC-V 64-bit compiler optimization bugs
+        let val = Self(u256::from_bytes_volatile(bytes));
         if val.overflow() {
             Err(Secp256r1Err::InvalidSignature)
         } else {

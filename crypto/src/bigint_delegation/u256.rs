@@ -30,12 +30,55 @@ pub const fn from_bytes_unchecked(bytes: &[u8; 32]) -> U256 {
     ])
 }
 
+/// Runtime version of from_bytes_unchecked with volatile reads.
+/// This prevents RISC-V 64-bit compiler optimization bugs that corrupt data.
+#[inline(always)]
+pub fn from_bytes_volatile(bytes: &[u8; 32]) -> U256 {
+    // Read bytes using volatile reads and construct limbs directly
+    // to prevent compiler optimization issues
+    unsafe {
+        let read = |i: usize| core::ptr::read_volatile(&bytes[i]);
+
+        BigInt::<4>([
+            u64::from_le_bytes([
+                read(31), read(30), read(29), read(28), read(27), read(26), read(25), read(24),
+            ]),
+            u64::from_le_bytes([
+                read(23), read(22), read(21), read(20), read(19), read(18), read(17), read(16),
+            ]),
+            u64::from_le_bytes([
+                read(15), read(14), read(13), read(12), read(11), read(10), read(9), read(8),
+            ]),
+            u64::from_le_bytes([
+                read(7), read(6), read(5), read(4), read(3), read(2), read(1), read(0),
+            ]),
+        ])
+    }
+}
+
 pub fn to_be_bytes(a: U256) -> [u8; 32] {
+    // Use volatile reads to prevent RISC-V 64-bit compiler optimization bugs
     let mut r = [0u8; 32];
-    r[0..8].copy_from_slice(&a.0[3].to_be_bytes());
-    r[8..16].copy_from_slice(&a.0[2].to_be_bytes());
-    r[16..24].copy_from_slice(&a.0[1].to_be_bytes());
-    r[24..32].copy_from_slice(&a.0[0].to_be_bytes());
+    unsafe {
+        // Read limbs using volatile reads
+        let limb3 = core::ptr::read_volatile(&a.0[3]);
+        let limb2 = core::ptr::read_volatile(&a.0[2]);
+        let limb1 = core::ptr::read_volatile(&a.0[1]);
+        let limb0 = core::ptr::read_volatile(&a.0[0]);
+
+        // Write bytes using volatile writes
+        let bytes3 = limb3.to_be_bytes();
+        let bytes2 = limb2.to_be_bytes();
+        let bytes1 = limb1.to_be_bytes();
+        let bytes0 = limb0.to_be_bytes();
+
+        for i in 0..8 {
+            core::ptr::write_volatile(&mut r[i], bytes3[i]);
+            core::ptr::write_volatile(&mut r[8 + i], bytes2[i]);
+            core::ptr::write_volatile(&mut r[16 + i], bytes1[i]);
+            core::ptr::write_volatile(&mut r[24 + i], bytes0[i]);
+        }
+    }
 
     r
 }

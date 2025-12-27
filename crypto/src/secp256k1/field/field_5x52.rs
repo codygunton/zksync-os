@@ -76,11 +76,67 @@ impl FieldElement5x52 {
 
     #[inline(always)]
     pub(super) fn from_bytes(bytes: &[u8; 32]) -> Option<Self> {
+        // Use volatile-safe version on RISC-V 64-bit to prevent compiler optimization bugs
+        #[cfg(target_arch = "riscv64")]
+        let val = Self::from_bytes_volatile(bytes);
+        #[cfg(not(target_arch = "riscv64"))]
         let val = Self::from_bytes_unchecked(bytes);
+
         if val.overflow() {
             None
         } else {
             Some(val)
+        }
+    }
+
+    /// Volatile-safe version of from_bytes for RISC-V 64-bit.
+    /// Uses volatile reads to prevent LLVM optimization bugs that corrupt data.
+    #[cfg(target_arch = "riscv64")]
+    #[inline(never)]
+    fn from_bytes_volatile(bytes: &[u8; 32]) -> Self {
+        unsafe {
+            let read = |i: usize| core::ptr::read_volatile(&bytes[i]);
+
+            let w0 = (read(31) as u64)
+                | ((read(30) as u64) << 8)
+                | ((read(29) as u64) << 16)
+                | ((read(28) as u64) << 24)
+                | ((read(27) as u64) << 32)
+                | ((read(26) as u64) << 40)
+                | (((read(25) & 0xFu8) as u64) << 48);
+
+            let w1 = ((read(25) >> 4) as u64)
+                | ((read(24) as u64) << 4)
+                | ((read(23) as u64) << 12)
+                | ((read(22) as u64) << 20)
+                | ((read(21) as u64) << 28)
+                | ((read(20) as u64) << 36)
+                | ((read(19) as u64) << 44);
+
+            let w2 = (read(18) as u64)
+                | ((read(17) as u64) << 8)
+                | ((read(16) as u64) << 16)
+                | ((read(15) as u64) << 24)
+                | ((read(14) as u64) << 32)
+                | ((read(13) as u64) << 40)
+                | (((read(12) & 0xFu8) as u64) << 48);
+
+            let w3 = ((read(12) >> 4) as u64)
+                | ((read(11) as u64) << 4)
+                | ((read(10) as u64) << 12)
+                | ((read(9) as u64) << 20)
+                | ((read(8) as u64) << 28)
+                | ((read(7) as u64) << 36)
+                | ((read(6) as u64) << 44);
+
+            let w4 = (read(5) as u64)
+                | ((read(4) as u64) << 8)
+                | ((read(3) as u64) << 16)
+                | ((read(2) as u64) << 24)
+                | ((read(1) as u64) << 32)
+                | ((read(0) as u64) << 40);
+
+            Self([w0, w1, w2, w3, w4])
         }
     }
 
@@ -575,6 +631,8 @@ pub(super) struct FieldStorage5x52([u64; 4]);
 impl FieldStorage5x52 {
     pub(super) const DEFAULT: Self = Self([0; 4]);
 
+    // Native conversion: returns FieldElement5x52 when NOT using bigint_ops delegation
+    #[cfg(not(all(target_arch = "riscv64", feature = "bigint_ops")))]
     #[inline(always)]
     pub(super) const fn to_field_elem(self) -> FieldElement5x52 {
         FieldElement5x52([
@@ -584,6 +642,24 @@ impl FieldStorage5x52 {
             self.0[2] >> 28 | ((self.0[3] << 36) & 0xFFFFFFFFFFFFF),
             self.0[3] >> 16,
         ])
+    }
+
+    // Delegation conversion: returns FieldElement8x32 when using bigint_ops on riscv64
+    // Uses volatile reads to prevent RISC-V LLVM optimization bugs that corrupt data
+    #[cfg(all(target_arch = "riscv64", feature = "bigint_ops"))]
+    #[inline(never)]
+    pub(super) fn to_field_elem(self) -> crate::secp256k1::field::field_8x32::FieldElement8x32 {
+        // FieldStorage5x52 holds the value as 4 x u64
+        // FieldElement8x32 expects 4 x u64 (BigInt<4>)
+        // Use volatile reads to prevent compiler optimization bugs
+        unsafe {
+            let w0 = core::ptr::read_volatile(&self.0[0]);
+            let w1 = core::ptr::read_volatile(&self.0[1]);
+            let w2 = core::ptr::read_volatile(&self.0[2]);
+            let w3 = core::ptr::read_volatile(&self.0[3]);
+            use crate::ark_ff_delegation::BigInt;
+            crate::secp256k1::field::field_8x32::FieldElement8x32(BigInt([w0, w1, w2, w3]))
+        }
     }
 }
 

@@ -8,16 +8,15 @@ mod field_10x26;
 #[cfg(any(any(target_arch = "riscv32", target_arch = "riscv64"), test, all(feature = "proving", fuzzing)))]
 mod mod_inv32;
 
-// field_5x52: 64-bit implementation, also used on riscv64 regardless of bigint_ops
-// (Zisk doesn't support CSR 0x7ca delegation)
+// field_5x52: 64-bit implementation, used when not using delegation
 #[cfg(any(target_pointer_width = "64", test, all(feature = "proving", fuzzing)))]
 mod field_5x52;
 #[cfg(any(target_pointer_width = "64", test, all(feature = "proving", fuzzing)))]
 mod mod_inv64;
 
-// field_8x32: CSR delegation implementation, only used on riscv32 with bigint_ops
+// field_8x32: CSR delegation implementation, used on riscv32/riscv64 with bigint_ops
 #[cfg(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     test,
     all(feature = "proving", fuzzing)
 ))]
@@ -29,11 +28,14 @@ mod field_impl;
 cfg_if! {
     if #[cfg(all(debug_assertions, not(feature = "bigint_ops")))] {
         use field_impl::{FieldElementImpl as FieldElementImplConst, FieldElementImpl, FieldStorageImpl};
-    // Only use bigint_ops delegation on riscv32 (airbender has CSR 0x7ca support)
-    // Zisk (riscv64) doesn't support CSR 0x7ca, so use pure Rust field_5x52
-    } else if #[cfg(all(feature = "bigint_ops", target_arch = "riscv32"))] {
-        use field_10x26::{FieldElement10x26 as FieldElementImplConst, FieldStorage10x26 as FieldStorageImpl};
+    // Use bigint_ops delegation on riscv32/riscv64
+    } else if #[cfg(all(feature = "bigint_ops", any(target_arch = "riscv32", target_arch = "riscv64")))] {
         use field_8x32::FieldElement8x32 as FieldElementImpl;
+        // For const operations, use the native implementation
+        #[cfg(target_pointer_width = "32")]
+        use field_10x26::{FieldElement10x26 as FieldElementImplConst, FieldStorage10x26 as FieldStorageImpl};
+        #[cfg(target_pointer_width = "64")]
+        use field_5x52::{FieldElement5x52 as FieldElementImplConst, FieldStorage5x52 as FieldStorageImpl};
     } else if #[cfg(target_pointer_width = "64")] {
         use field_5x52::{FieldElement5x52 as FieldElementImpl, FieldElement5x52 as FieldElementImplConst, FieldStorage5x52 as FieldStorageImpl};
     } else if #[cfg(target_pointer_width = "32")] {
@@ -139,6 +141,24 @@ impl FieldElement {
         FieldElementImpl::from_bytes(bytes).map(Self)
     }
 
+    /// Converts bytes to field element, writing to output parameter.
+    /// This avoids Copy trait issues on RISC-V 64-bit by using volatile operations.
+    /// Returns true on success, false if bytes are out of range.
+    #[cfg(all(target_arch = "riscv64", feature = "bigint_ops"))]
+    pub(crate) fn from_bytes_to(bytes: &[u8; 32], out: &mut Self) -> bool {
+        FieldElementImpl::from_bytes_to(bytes, &mut out.0)
+    }
+
+    #[cfg(not(all(target_arch = "riscv64", feature = "bigint_ops")))]
+    pub(crate) fn from_bytes_to(bytes: &[u8; 32], out: &mut Self) -> bool {
+        if let Some(value) = Self::from_bytes(bytes) {
+            *out = value;
+            true
+        } else {
+            false
+        }
+    }
+
     pub(crate) fn mul_in_place(&mut self, rhs: &Self) {
         self.0.mul_in_place(&rhs.0);
     }
@@ -169,6 +189,20 @@ impl FieldElement {
 
     pub(crate) fn invert_in_place(&mut self) {
         self.0.invert_in_place()
+    }
+
+    /// Volatile copy to prevent RISC-V compiler optimization bugs during copy/clone.
+    /// The RISC-V 64-bit LLVM backend generates buggy code for struct copies.
+    #[cfg(all(target_arch = "riscv64", feature = "bigint_ops"))]
+    #[inline(never)]
+    pub(crate) fn volatile_copy_from(&mut self, src: &Self) {
+        self.0.volatile_copy_from(&src.0);
+    }
+
+    #[cfg(not(all(target_arch = "riscv64", feature = "bigint_ops")))]
+    #[inline(always)]
+    pub(crate) fn volatile_copy_from(&mut self, src: &Self) {
+        *self = *src;
     }
 
     pub(crate) fn sqrt_in_place_unchecked(&mut self) {
