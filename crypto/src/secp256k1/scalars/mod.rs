@@ -5,26 +5,24 @@ use cfg_if::cfg_if;
 
 mod invert;
 
-// scalar64: pure Rust 64-bit implementation, used on all 64-bit platforms
-// (except riscv32 with bigint_ops which uses CSR delegation)
+// scalar64: pure Rust 64-bit implementation, used on 64-bit platforms without bigint_ops
 #[cfg(target_pointer_width = "64")]
 mod scalar64;
 
 #[cfg(all(target_pointer_width = "32", not(feature = "bigint_ops")))]
 mod scalar32;
 
-// scalar32_delegation: only used on riscv32 with bigint_ops (airbender CSR delegation)
+// scalar32_delegation: used on riscv32/riscv64 with bigint_ops
 #[cfg(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     test,
     all(feature = "proving", fuzzing)
 ))]
 pub(crate) mod scalar32_delegation;
 
 cfg_if! {
-    // Only use bigint_ops delegation on riscv32 (airbender has CSR 0x7ca support)
-    // Zisk (riscv64) doesn't support CSR 0x7ca, so use pure Rust scalar64
-    if #[cfg(all(feature = "bigint_ops", target_arch = "riscv32"))] {
+    // Use bigint_ops delegation on riscv32/riscv64
+    if #[cfg(all(feature = "bigint_ops", any(target_arch = "riscv32", target_arch = "riscv64")))] {
         use scalar32_delegation::ScalarInner;
     } else if #[cfg(target_pointer_width = "32")] {
         use scalar32::ScalarInner;
@@ -245,7 +243,7 @@ mod tests {
 
             // scalar32_delegation uses Montgomery representation internally,
             // so we need to convert to normal representation for comparison
-            #[cfg(all(feature = "bigint_ops", target_arch = "riscv32"))]
+            #[cfg(all(feature = "bigint_ops", any(target_arch = "riscv32", target_arch = "riscv64")))]
             {
                 r1 = Scalar(r1.0.to_representation());
                 r2 = Scalar(r2.0.to_representation());
@@ -254,7 +252,7 @@ mod tests {
             prop_assert_eq!(r1 + r2 * lambda, k);
 
             // Convert back to integer form for the bound check
-            #[cfg(all(feature = "bigint_ops", target_arch = "riscv32"))]
+            #[cfg(all(feature = "bigint_ops", any(target_arch = "riscv32", target_arch = "riscv64")))]
             {
                 r1 = Scalar(r1.0.to_integer());
                 r2 = Scalar(r2.0.to_integer());

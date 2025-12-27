@@ -3316,7 +3316,6 @@ dependencies = [
 name = "execution_utils"
 version = "0.1.0"
 dependencies = [
- "clap",
  "risc_v_simulator",
  "serde",
  "serde_json",
