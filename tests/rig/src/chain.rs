@@ -26,9 +26,9 @@ use std::io::Write;
 use std::path::PathBuf;
 
 #[cfg(feature = "zisk-witness")]
-use crate::zisk_bridge::ZiskOracleBridge;
+use crate::zisk_bridge::{ZiskMemorySource, ZiskOracleBridge};
 #[cfg(feature = "zisk-witness")]
-use oracle_provider::DummyMemorySource;
+use std::sync::Arc;
 use zk_ee::common_structs::da_commitment_scheme::DACommitmentScheme;
 use zk_ee::common_structs::{derive_flat_storage_key, ProofData};
 use zk_ee::system::metadata::zk_metadata::{BlockHashes, BlockMetadataFromOracle};
@@ -243,7 +243,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
     /// the witness. The witness will be compatible with 64-bit Zisk execution.
     #[cfg(feature = "zisk-witness")]
     pub fn run_block_generate_witness_zisk(
-        oracle: ZkEENonDeterminismSource<DummyMemorySource>,
+        oracle: ZkEENonDeterminismSource<ZiskMemorySource>,
         elf_path: &str,
     ) -> Vec<u32> {
         use log::info;
@@ -251,8 +251,12 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
 
         info!("Generating witness using Zisk emulator: {}", elf_path);
 
+        // Create a shared memory source for the oracle
+        // This will be set before each oracle call to provide access to guest memory
+        let memory_source = Arc::new(ZiskMemorySource::new_empty());
+
         // Create the bridge that wraps the oracle and captures reads
-        let bridge = ZiskOracleBridge::new(oracle);
+        let bridge = ZiskOracleBridge::new(oracle, memory_source);
         let witness_ref = bridge.get_witness();
         let oracle_callback = bridge.into_callback();
 
@@ -545,7 +549,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
         // For zisk-witness, create oracle BEFORE forward run
         // (the oracle and proof_data must use matching pre-forward-run state)
         #[cfg(feature = "zisk-witness")]
-        let zisk_oracle: ZkEENonDeterminismSource<DummyMemorySource> = oracle_factory.create_oracle(
+        let zisk_oracle: ZkEENonDeterminismSource<ZiskMemorySource> = oracle_factory.create_oracle(
             block_metadata,
             self.state_tree.clone(),
             self.preimage_source.clone(),

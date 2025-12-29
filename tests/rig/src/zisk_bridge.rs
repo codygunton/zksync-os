@@ -19,8 +19,10 @@
 //!
 //! This bridge tracks state to handle the length specially.
 
-use oracle_provider::{DummyMemorySource, ZkEENonDeterminismSource};
+use oracle_provider::{MemorySource, ZkEENonDeterminismSource};
+use risc_v_simulator::abstractions::memory::AccessType;
 use risc_v_simulator::abstractions::non_determinism::NonDeterminismCSRSource;
+use risc_v_simulator::cycle::status_registers::TrapReason;
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -43,6 +45,83 @@ fn verbose_bridge() -> bool {
     *VERBOSE.get_or_init(|| std::env::var("VERBOSE_BRIDGE").is_ok())
 }
 
+/// Memory source that wraps a ZiskMemoryReader pointer.
+///
+/// This adapter implements the `MemorySource` trait required by the oracle
+/// by forwarding memory reads to the Zisk emulator's memory via the
+/// `ZiskMemoryReader` trait.
+///
+/// # Safety
+/// The stored pointer must remain valid for the lifetime of any method calls.
+/// This is ensured by the single-threaded synchronous callback execution model.
+pub struct ZiskMemorySource {
+    /// Raw pointer to the current memory reader. Set before each oracle call.
+    /// Uses Option because trait object pointers are fat pointers and can't use null().
+    reader: UnsafeCell<Option<*const dyn ziskemu::ZiskMemoryReader>>,
+}
+
+// Safety: ZiskMemorySource is only used in single-threaded witness generation.
+unsafe impl Send for ZiskMemorySource {}
+unsafe impl Sync for ZiskMemorySource {}
+
+impl Default for ZiskMemorySource {
+    fn default() -> Self {
+        Self::new_empty()
+    }
+}
+
+impl ZiskMemorySource {
+    /// Create a new empty memory source (no reader set).
+    /// The pointer must be set via `set_reader()` before use.
+    pub fn new_empty() -> Self {
+        Self {
+            reader: UnsafeCell::new(None),
+        }
+    }
+
+    /// Set the memory reader pointer for the next oracle operation.
+    ///
+    /// # Safety
+    /// The reader pointer must remain valid until `clear_reader()` is called.
+    pub unsafe fn set_reader(&self, reader: *const dyn ziskemu::ZiskMemoryReader) {
+        *self.reader.get() = Some(reader);
+    }
+
+    /// Clear the memory reader pointer after an oracle operation.
+    pub fn clear_reader(&self) {
+        unsafe {
+            *self.reader.get() = None;
+        }
+    }
+}
+
+impl MemorySource for ZiskMemorySource {
+    fn get(
+        &self,
+        phys_address: u64,
+        _access_type: AccessType,
+        _trap: &mut TrapReason,
+    ) -> u32 {
+        // Safety: reader pointer is set before oracle calls and valid for duration
+        let reader_opt = unsafe { *self.reader.get() };
+        let reader_ptr = reader_opt.expect("ZiskMemorySource::get() called without memory reader set!");
+        let reader = unsafe { &*reader_ptr };
+        // Read 4 bytes (u32) at the given address
+        reader.read_mem(phys_address, 4) as u32
+    }
+
+    fn set(
+        &mut self,
+        _phys_address: u64,
+        _value: u32,
+        _access_type: AccessType,
+        _trap: &mut TrapReason,
+    ) {
+        // Oracle queries only read from memory, never write
+        panic!("ZiskMemorySource::set() should never be called - oracle is read-only");
+    }
+}
+
 /// Bridge between ZkEENonDeterminismSource and Zisk's oracle callback interface.
 ///
 /// This struct wraps the oracle and captures all reads into a witness vector.
@@ -54,7 +133,9 @@ fn verbose_bridge() -> bool {
 /// This bridge MUST only be used from a single thread. The `Send` impl is only
 /// safe because witness generation runs on a single thread.
 pub struct ZiskOracleBridge {
-    oracle: UnsafeCell<ZkEENonDeterminismSource<DummyMemorySource>>,
+    oracle: UnsafeCell<ZkEENonDeterminismSource<ZiskMemorySource>>,
+    /// Shared memory source used by the oracle. Must be set before each write.
+    memory_source: Arc<ZiskMemorySource>,
     witness: Arc<Mutex<Vec<u32>>>,
     /// How many u32 values remain to read for current query response.
     /// 0 means next read is a length indicator.
@@ -71,9 +152,13 @@ unsafe impl Sync for ZiskOracleBridge {}
 
 impl ZiskOracleBridge {
     /// Create a new bridge wrapping the given oracle.
-    pub fn new(oracle: ZkEENonDeterminismSource<DummyMemorySource>) -> Self {
+    ///
+    /// The oracle must have been created with a `ZiskMemorySource` that will
+    /// be used for memory access during query processing.
+    pub fn new(oracle: ZkEENonDeterminismSource<ZiskMemorySource>, memory_source: Arc<ZiskMemorySource>) -> Self {
         Self {
             oracle: UnsafeCell::new(oracle),
+            memory_source,
             witness: Arc::new(Mutex::new(Vec::new())),
             remaining_u32s: AtomicU32::new(0),
             ignore_next_zero_write: AtomicU32::new(0),
@@ -104,13 +189,15 @@ impl ZiskOracleBridge {
         value
     }
 
-    /// Write to the oracle.
+    /// Write to the oracle with memory access.
     ///
-    /// Called by Zisk emulator on CSR write.
+    /// Called by Zisk emulator on CSR write. The memory_reader provides access
+    /// to guest memory for operations like modexp that need to read parameters.
     ///
     /// # Safety
-    /// Must only be called from a single thread.
-    pub fn write(&self, value: u32) {
+    /// Must only be called from a single thread. The memory_reader must be valid
+    /// for the duration of the call.
+    pub fn write_with_mem(&self, value: u32, memory_reader: &dyn ziskemu::ZiskMemoryReader) {
         // Safety: single-threaded access guaranteed by caller
         let oracle = unsafe { &mut *self.oracle.get() };
         let count = ORACLE_OP_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -119,7 +206,25 @@ impl ZiskOracleBridge {
         if !is_quiet() && ((value & 0xF0000000) == 0x40000000 || count % 100000 == 0) {
             // eprintln!("[oracle] op={} write 0x{:08x}", count, value);
         }
-        oracle.write_with_memory_access(&DummyMemorySource, value);
+
+        // Set the memory reader pointer in the shared memory source
+        // Safety: pointer is only stored for duration of this call (cleared below).
+        // We use transmute to strip the lifetime - this is sound because:
+        // 1. The pointer is only used synchronously during write_with_memory_access()
+        // 2. We clear the pointer before returning
+        // 3. Single-threaded access is guaranteed by the caller
+        let reader_ptr: *const dyn ziskemu::ZiskMemoryReader = memory_reader;
+        let reader_ptr_static: *const dyn ziskemu::ZiskMemoryReader =
+            unsafe { std::mem::transmute(reader_ptr) };
+        unsafe {
+            self.memory_source.set_reader(reader_ptr_static);
+        }
+
+        // Call the oracle with our memory source
+        oracle.write_with_memory_access(&*self.memory_source, value);
+
+        // Clear the pointer after use
+        self.memory_source.clear_reader();
     }
 
     /// Read a u64 value, handling the protocol correctly.
@@ -181,7 +286,7 @@ impl ZiskOracleBridge {
     ///
     /// # Safety
     /// Must only be called from a single thread.
-    fn write_u64(&self, val: u64) {
+    fn write_u64(&self, val: u64, memory_reader: &dyn ziskemu::ZiskMemoryReader) {
         // The CSRRW instruction writes x0=0 when reading, causing spurious writes.
         // We need to ignore write(0) when:
         // 1. We're in the middle of reading a response (remaining > 0)
@@ -215,7 +320,7 @@ impl ZiskOracleBridge {
         // Each write_u64 call here contains just one u32 value (zero-extended).
         // We simply forward the low 32 bits to the oracle.
         let value = val as u32;
-        self.write(value);
+        self.write_with_mem(value, memory_reader);
     }
 
     /// Convert this bridge into a Zisk OracleCallback.
@@ -231,11 +336,11 @@ impl ZiskOracleBridge {
 
         let bridge = Arc::new(self);
 
-        Arc::new(Mutex::new(move |op: OracleOp| -> u64 {
+        Arc::new(Mutex::new(move |op: OracleOp, memory_reader: &dyn ziskemu::ZiskMemoryReader| -> u64 {
             match op {
                 OracleOp::Read => bridge.read_u64(),
                 OracleOp::Write(val) => {
-                    bridge.write_u64(val);
+                    bridge.write_u64(val, memory_reader);
                     0
                 }
             }
@@ -249,9 +354,11 @@ mod tests {
 
     #[test]
     fn test_bridge_captures_reads() {
+        // Create a shared memory source
+        let memory_source = Arc::new(ZiskMemorySource::new_empty());
         // Create an empty oracle (will panic on actual use, but we can test the structure)
-        let oracle = ZkEENonDeterminismSource::default();
-        let bridge = ZiskOracleBridge::new(oracle);
+        let oracle: ZkEENonDeterminismSource<ZiskMemorySource> = ZkEENonDeterminismSource::default();
+        let bridge = ZiskOracleBridge::new(oracle, memory_source);
 
         let witness_ref = bridge.get_witness();
 
