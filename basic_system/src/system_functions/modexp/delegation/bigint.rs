@@ -820,27 +820,73 @@ pub(crate) struct OracleAdvisor<'a, O: IOOracle> {
 #[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "proving"), test))]
 fn write_bigint(
     it: &mut impl ExactSizeIterator<Item = usize>,
-    mut to_consume: usize,
+    to_consume: usize,
     dst: &mut BigintRepr<impl Allocator + Clone>,
 ) {
     // NOTE: even if oracle overstates the number of digits (so - iterator length), it is not important
     // as long as caller checks that number of digits is within bounds of soundness
+    //
+    // On 64-bit systems, each it.next() returns a u64 (containing two u32 words).
+    // The to_consume count is in u32 words, so we need to adjust.
     unsafe {
         let num_digits = to_consume.next_multiple_of(8) / 8;
         let dst_capacity = dst.clear_as_capacity_mut();
-        for dst in dst_capacity[..num_digits].iter_mut() {
-            let dst: *mut u32 = dst.as_mut_ptr().cast::<[u32; 8]>().cast();
-            for i in 0..8 {
-                if to_consume > 0 {
-                    to_consume -= 1;
-                    let digit = it.next().unwrap();
-                    dst.add(i).write(digit as u32);
-                } else {
-                    dst.add(i).write(0);
+
+        #[cfg(target_pointer_width = "32")]
+        {
+            let mut remaining = to_consume;
+            for dst in dst_capacity[..num_digits].iter_mut() {
+                let dst: *mut u32 = dst.as_mut_ptr().cast::<[u32; 8]>().cast();
+                for i in 0..8 {
+                    if remaining > 0 {
+                        remaining -= 1;
+                        let digit = it.next().unwrap();
+                        dst.add(i).write(digit as u32);
+                    } else {
+                        dst.add(i).write(0);
+                    }
                 }
             }
+            assert_eq!(remaining, 0);
         }
-        assert_eq!(to_consume, 0);
+
+        #[cfg(target_pointer_width = "64")]
+        {
+            // Each it.next() gives a u64 = 2 u32 words.
+            // Process pairs of u32 words at a time.
+            let mut remaining = to_consume;
+            for dst in dst_capacity[..num_digits].iter_mut() {
+                let dst: *mut u32 = dst.as_mut_ptr().cast::<[u32; 8]>().cast();
+                let mut i = 0;
+                while i < 8 {
+                    if remaining >= 2 {
+                        // Read one u64 = two u32 words
+                        let value = it.next().unwrap();
+                        dst.add(i).write(value as u32);          // low word
+                        dst.add(i + 1).write((value >> 32) as u32);  // high word
+                        remaining -= 2;
+                        i += 2;
+                    } else if remaining == 1 {
+                        // Odd number of u32s: read one u64 but only use low word
+                        let value = it.next().unwrap();
+                        dst.add(i).write(value as u32);
+                        remaining -= 1;
+                        i += 1;
+                        // Fill rest with zeros
+                        while i < 8 {
+                            dst.add(i).write(0);
+                            i += 1;
+                        }
+                    } else {
+                        // remaining == 0, fill with zeros
+                        dst.add(i).write(0);
+                        i += 1;
+                    }
+                }
+            }
+            assert_eq!(remaining, 0);
+        }
+
         dst.set_num_digits(num_digits);
     }
 }
@@ -883,8 +929,23 @@ impl<'a, O: IOOracle> ModexpAdvisor for OracleAdvisor<'a, O> {
             )
             .unwrap();
 
-        let q_len = it.next().expect("quotient length");
-        let r_len = it.next().expect("remainder length");
+        // The oracle packs q_len and r_len into a single u64:
+        // low 32 bits = q_len, high 32 bits = r_len
+        // On 64-bit systems, we need to unpack this from a single usize.
+        // On 32-bit systems, we read two separate u32 values.
+        #[cfg(target_pointer_width = "64")]
+        let (q_len, r_len) = {
+            let packed = it.next().expect("packed lengths");
+            let q_len = (packed & 0xFFFFFFFF) as usize;
+            let r_len = (packed >> 32) as usize;
+            (q_len, r_len)
+        };
+        #[cfg(target_pointer_width = "32")]
+        let (q_len, r_len) = {
+            let q_len = it.next().expect("quotient length");
+            let r_len = it.next().expect("remainder length");
+            (q_len, r_len)
+        };
 
         let max_quotient_digits = if a.digits < m.digits {
             0
