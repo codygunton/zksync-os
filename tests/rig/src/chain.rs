@@ -241,13 +241,17 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
     ///
     /// This uses the Zisk emulator instead of airbender (32-bit) to generate
     /// the witness. The witness will be compatible with 64-bit Zisk execution.
+    ///
+    /// Returns: (witness, proof_output) where proof_output is the final register
+    /// values x10-x17 as [u32; 8], matching airbender's output convention.
     #[cfg(feature = "zisk-witness")]
     pub fn run_block_generate_witness_zisk(
         oracle: ZkEENonDeterminismSource<ZiskMemorySource>,
         elf_path: &str,
-    ) -> Vec<u32> {
+    ) -> (Vec<u32>, [u32; 8]) {
         use log::info;
-        use ziskemu::{EmuOptions, Emulator, ZiskEmulator};
+        use zisk_core::Riscv2zisk;
+        use ziskemu::{EmuOptions, ZiskEmulator};
 
         info!("Generating witness using Zisk emulator: {}", elf_path);
 
@@ -263,31 +267,36 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
         // Create emulator options
         // Enable UART output to stderr so we can see guest logs
         let options = EmuOptions {
-            elf: Some(elf_path.to_string()),
             verbose: false,  // Keep quiet for cleaner logs (set to true for debugging)
             uart: "stderr".to_string(),
             log_metrics: true,  // Show step count and performance metrics
             ..Default::default()
         };
 
-        // Run the emulator using the ZiskEmulator interface
-        let emulator = ZiskEmulator;
-        let result = emulator.emulate(
+        // Convert ELF to ZisK ROM
+        let riscv2zisk = Riscv2zisk::new(elf_path.to_string());
+        let zisk_rom = riscv2zisk.run().expect("Failed to convert ELF to ZisK ROM");
+
+        // Run the emulator using process_rom_with_regs to get final register values
+        // This matches airbender's convention of returning output via registers x10-x17
+        let result = ZiskEmulator::process_rom_with_regs(
+            &zisk_rom,
+            &[],  // No input buffer needed, data comes via oracle
             &options,
             None::<Box<dyn Fn(ziskemu::EmuTrace)>>,
             Some(oracle_callback),
         );
 
         match result {
-            Ok(output) => {
+            Ok((_output, proof_output)) => {
                 // Print completion info from Zisk emulator
                 eprintln!("\n[ZISK] Emulation complete");
-                eprintln!("[ZISK] Output size: {} bytes", output.len());
+                eprintln!("[ZISK] Proof output (x10-x17): {:08x?}", proof_output);
 
                 // Extract and return the captured witness
                 let witness = witness_ref.lock().expect("witness lock").clone();
                 info!("Generated witness with {} u32 values", witness.len());
-                witness
+                (witness, proof_output)
             }
             Err(e) => {
                 panic!("Zisk emulator failed: {:?}", e);
@@ -513,7 +522,9 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
 
         let da_commitment_scheme =
             da_commitment_scheme.unwrap_or(DACommitmentScheme::BlobsAndPubdataKeccak256);
-        let oracle = oracle_factory.create_oracle(
+        // Note: When zisk-witness is enabled, this oracle is unused (zisk_oracle is used instead)
+        // but we still need the type annotation to satisfy the compiler
+        let oracle: ZkEENonDeterminismSource<VectorMemoryImpl> = oracle_factory.create_oracle(
             block_metadata,
             self.state_tree.clone(),
             self.preimage_source.clone(),
@@ -623,7 +634,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
         let proof_input = if !only_forward {
             if let Some(path) = witness_output_file {
                 #[cfg(feature = "zisk-witness")]
-                let result = {
+                let (result, _proof_output) = {
                     let elf_path = get_zksync_os_sym_path(&app);
                     Self::run_block_generate_witness_zisk(zisk_oracle, elf_path.to_str().unwrap())
                 };
@@ -644,10 +655,10 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
                     // Use Zisk emulator (64-bit)
                     let elf_path = get_zksync_os_sym_path(&app);
                     let now = std::time::Instant::now();
-                    let witness = Self::run_block_generate_witness_zisk(oracle, elf_path.to_str().unwrap());
+                    let (witness, zisk_output) = Self::run_block_generate_witness_zisk(zisk_oracle, elf_path.to_str().unwrap());
                     info!("Zisk emulator executed over {:?}", now.elapsed());
                     // Zisk doesn't report effective cycles in the same way, use None for now
-                    (witness, [0u32; 8], None)
+                    (witness, zisk_output, None)
                 };
 
                 #[cfg(not(feature = "zisk-witness"))]
@@ -708,15 +719,27 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
                     debug!("{word:08x}");
                 }
 
-                // For Zisk, we skip the proof output assertion (output is zeros)
-                #[cfg(not(feature = "zisk-witness"))]
+                // Validate proof output for both Airbender and Zisk
                 {
                     // Ensure that proof running didn't fail: check that output is not zero
-                    assert!(proof_output.into_iter().any(|word| word != 0));
-                    let proof_output_u8: [u8; 32] = unsafe { core::mem::transmute(proof_output) };
+                    assert!(
+                        proof_output.into_iter().any(|word| word != 0),
+                        "Proof output is all zeros - execution failed!"
+                    );
 
-                    if check_storage_diff_hashes {
-                        // Also ensure that storage diff hash matches
+                    // For zisk, we use check_storage_diff_hashes from the run config
+                    // For airbender, it's controlled by the same flag
+                    #[cfg(feature = "zisk-witness")]
+                    let should_check_hashes = true; // Always check for zisk
+                    #[cfg(not(feature = "zisk-witness"))]
+                    let should_check_hashes = check_storage_diff_hashes;
+
+                    if should_check_hashes {
+                        // Convert proof_output [u32; 8] to bytes for comparison
+                        // Both airbender and zisk use native endianness (registers are native format)
+                        let proof_output_u8: [u8; 32] = unsafe { core::mem::transmute(proof_output) };
+
+                        // Compute expected storage diff hash from forward run
                         use crypto::MiniDigest;
                         let mut hasher = crypto::blake2s::Blake2s256::new();
                         for StorageWrite { key, value, .. } in block_output.storage_writes.iter() {
@@ -728,7 +751,14 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
                             "Forward storage diff hash: 0x{}",
                             hex::encode(forward_storage_diff_hash.as_ref())
                         );
-                        assert_eq!(proof_output_u8, forward_storage_diff_hash);
+                        info!(
+                            "Proof output hash:         0x{}",
+                            hex::encode(&proof_output_u8)
+                        );
+                        assert_eq!(
+                            proof_output_u8, forward_storage_diff_hash,
+                            "Storage diff hash mismatch! Proof output differs from forward run."
+                        );
 
                         #[cfg(feature = "e2e_proving")]
                         run_prover(proof_input.as_slice());
