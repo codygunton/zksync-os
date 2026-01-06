@@ -302,13 +302,153 @@ impl UsizeSerializable for Bytes32 {
 impl UsizeDeserializable for Bytes32 {
     const USIZE_LEN: usize = <Bytes32 as UsizeSerializable>::USIZE_LEN;
 
+    #[inline(never)]
     fn from_iter(src: &mut impl ExactSizeIterator<Item = usize>) -> Result<Self, InternalError> {
         if src.len() < <Self as UsizeDeserializable>::USIZE_LEN {
             return Err(internal_error!("Bytes32 deserialization failed: too short"));
         }
         let mut new = Bytes32::ZERO;
+
+        // RV64 diagnostic: track raw iterator values to find corruption source
+        // Only enable on actual riscv64 target, not x86_64
+        #[cfg(target_arch = "riscv64")]
+        {
+            const UART_ADDR: u64 = 0xa000_0200;
+
+            #[inline(never)]
+            fn uart_byte(b: u8) {
+                unsafe { core::ptr::write_volatile(UART_ADDR as *mut u8, b); }
+            }
+
+            #[inline(never)]
+            fn uart_hex(val: u64) {
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                for i in (0..16).rev() {
+                    uart_byte(HEX[((val >> (i * 4)) & 0xf) as usize]);
+                }
+            }
+
+            // Read all 4 usizes and store raw values
+            let v0 = unsafe { src.next().unwrap_unchecked() };
+            let v1 = unsafe { src.next().unwrap_unchecked() };
+            let v2 = unsafe { src.next().unwrap_unchecked() };
+            let v3 = unsafe { src.next().unwrap_unchecked() };
+
+            // Check for "corrupted zero" pattern: v0 == 0x0100 (byte1=1, rest=0) and v1,v2,v3 all zero
+            // This catches storage slots that SHOULD be zero but have byte 1 corrupted to 0x01
+            if v0 == 0x0000_0000_0000_0100 && v1 == 0 && v2 == 0 && v3 == 0 {
+                // Exact corrupted zero pattern!
+                uart_byte(b'[');
+                uart_byte(b'C');
+                uart_byte(b'O');
+                uart_byte(b'R');
+                uart_byte(b'R');
+                uart_byte(b'-');
+                uart_byte(b'Z');
+                uart_byte(b'E');
+                uart_byte(b'R');
+                uart_byte(b'O');
+                uart_byte(b']');
+                uart_byte(b'\n');
+            }
+
+            // Also print any value where byte1 is suspiciously 0x01 with byte0=0
+            // This helps identify other potential corruption patterns
+            let byte0 = (v0 & 0xff) as u8;
+            let byte1 = ((v0 >> 8) & 0xff) as u8;
+            if byte1 == 0x01 && byte0 == 0x00 {
+                uart_byte(b'[');
+                uart_byte(b'B');
+                uart_byte(b'1');
+                uart_byte(b']');
+                uart_byte(b' ');
+                uart_hex(v0 as u64);
+                uart_byte(b' ');
+                uart_hex(v1 as u64);
+                uart_byte(b' ');
+                uart_hex(v2 as u64);
+                uart_byte(b' ');
+                uart_hex(v3 as u64);
+                uart_byte(b'\n');
+            }
+
+            let arr = new.as_usize_array_mut();
+            arr[0] = v0;
+            arr[1] = v1;
+            arr[2] = v2;
+            arr[3] = v3;
+
+            // Check AFTER storing: did the store corrupt the value?
+            let stored0 = unsafe { core::ptr::read_volatile(&arr[0]) };
+            let stored1 = unsafe { core::ptr::read_volatile(&arr[1]) };
+            let stored2 = unsafe { core::ptr::read_volatile(&arr[2]) };
+            let stored3 = unsafe { core::ptr::read_volatile(&arr[3]) };
+
+            // Check for corruption: stored value differs from what we wrote
+            if stored0 != v0 || stored1 != v1 || stored2 != v2 || stored3 != v3 {
+                uart_byte(b'[');
+                uart_byte(b'S');
+                uart_byte(b'T');
+                uart_byte(b'O');
+                uart_byte(b'R');
+                uart_byte(b'E');
+                uart_byte(b']');
+                uart_byte(b' ');
+                uart_hex(v0 as u64);
+                uart_byte(b'-');
+                uart_byte(b'>');
+                uart_hex(stored0 as u64);
+                uart_byte(b'\n');
+            }
+
+            // Check for corrupted zero pattern in stored value
+            if stored0 == 0x0100 && stored1 == 0 && stored2 == 0 && stored3 == 0 {
+                uart_byte(b'[');
+                uart_byte(b'Z');
+                uart_byte(b'C');
+                uart_byte(b'O');
+                uart_byte(b'R');
+                uart_byte(b'R');
+                uart_byte(b']');
+                uart_byte(b'\n');
+            }
+        }
+
+        #[cfg(not(target_arch = "riscv64"))]
         for dst in new.as_usize_array_mut().iter_mut() {
             *dst = unsafe { src.next().unwrap_unchecked() };
+        }
+
+        // Final check before return - read the value back and check for corruption
+        #[cfg(target_arch = "riscv64")]
+        {
+            const UART_ADDR: u64 = 0xa000_0200;
+            fn uart_byte(b: u8) {
+                unsafe { core::ptr::write_volatile(UART_ADDR as *mut u8, b); }
+            }
+            fn uart_hex(val: u64) {
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                for i in (0..16).rev() {
+                    uart_byte(HEX[((val >> (i * 4)) & 0xf) as usize]);
+                }
+            }
+
+            let final0 = unsafe { core::ptr::read_volatile(&new.inner[0]) };
+            if final0 == 0x0100 {
+                let final1 = unsafe { core::ptr::read_volatile(&new.inner[1]) };
+                let final2 = unsafe { core::ptr::read_volatile(&new.inner[2]) };
+                let final3 = unsafe { core::ptr::read_volatile(&new.inner[3]) };
+                if final1 == 0 && final2 == 0 && final3 == 0 {
+                    uart_byte(b'[');
+                    uart_byte(b'F');
+                    uart_byte(b'I');
+                    uart_byte(b'N');
+                    uart_byte(b'A');
+                    uart_byte(b'L');
+                    uart_byte(b']');
+                    uart_byte(b'\n');
+                }
+            }
         }
 
         Ok(new)
