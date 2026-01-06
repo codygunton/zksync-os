@@ -8,6 +8,64 @@ use ark_ec::{
     bn,
     bn::{BnConfig, TwistType},
 };
+
+/// Simple UART logging for crypto debugging (RISC-V only)
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+pub mod uart {
+    const HELLO_MARKER: u32 = u32::MAX;
+
+    #[inline(always)]
+    fn csr_write_word(word: usize) {
+        unsafe {
+            core::arch::asm!(
+                "csrrw x0, 0x7c0, {rd}",
+                rd = in(reg) word,
+                options(nomem, nostack, preserves_flags)
+            )
+        }
+    }
+
+    pub fn write_str(s: &str) {
+        let len = s.len();
+        if len == 0 { return; }
+        csr_write_word(HELLO_MARKER as usize);
+        csr_write_word(len.next_multiple_of(4) / 4 + 1);
+        csr_write_word(len);
+        let bytes = s.as_bytes();
+        let mut i = 0;
+        while i + 4 <= len {
+            let word = u32::from_le_bytes([bytes[i], bytes[i+1], bytes[i+2], bytes[i+3]]);
+            csr_write_word(word as usize);
+            i += 4;
+        }
+        if i < len {
+            let mut buf = [0u8; 4];
+            for j in 0..(len - i) { buf[j] = bytes[i + j]; }
+            csr_write_word(u32::from_le_bytes(buf) as usize);
+        }
+    }
+
+    pub fn write_hex_u64(v: u64) {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut buf = [0u8; 18]; // "0x" + 16 hex chars
+        buf[0] = b'0';
+        buf[1] = b'x';
+        for i in 0..8 {
+            let byte = ((v >> (56 - i * 8)) & 0xff) as u8;
+            buf[2 + i * 2] = HEX[(byte >> 4) as usize];
+            buf[2 + i * 2 + 1] = HEX[(byte & 0xf) as usize];
+        }
+        // Write as string
+        let s = unsafe { core::str::from_utf8_unchecked(&buf) };
+        write_str(s);
+    }
+}
+
+#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
+pub mod uart {
+    pub fn write_str(_s: &str) {}
+    pub fn write_hex_u64(_v: u64) {}
+}
 #[cfg(not(any(
     all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     test,

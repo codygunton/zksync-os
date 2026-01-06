@@ -2,6 +2,39 @@ use super::{delegation, DelegatedBarretParams, DelegatedModParams, DelegatedMont
 use crate::ark_ff_delegation::{BigInt, BigInteger};
 use core::{fmt::Debug, marker::PhantomData};
 
+/// UART helpers for debugging (RV64 only)
+#[cfg(target_arch = "riscv64")]
+fn u256_uart_byte(b: u8) {
+    unsafe { core::ptr::write_volatile(0xa000_0200u64 as *mut u8, b); }
+}
+#[cfg(target_arch = "riscv64")]
+fn u256_uart_str(s: &str) {
+    for b in s.bytes() { u256_uart_byte(b); }
+}
+#[cfg(target_arch = "riscv64")]
+fn u256_uart_hex_u64(v: u64) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for i in (0..8).rev() {
+        let b = ((v >> (i * 8)) & 0xff) as u8;
+        u256_uart_byte(HEX[(b >> 4) as usize]);
+        u256_uart_byte(HEX[(b & 0xf) as usize]);
+    }
+}
+#[cfg(target_arch = "riscv64")]
+fn u256_uart_bigint(name: &str, val: &BigInt<4>) {
+    u256_uart_str(name);
+    u256_uart_str("=[");
+    for i in 0..4 {
+        u256_uart_hex_u64(unsafe { core::ptr::read_volatile(&val.0[i]) });
+        if i < 3 { u256_uart_str(","); }
+    }
+    u256_uart_str("]\n");
+}
+
+/// Counter for logging control
+#[cfg(target_arch = "riscv64")]
+static mut MONT_MUL_CALL_COUNT: u32 = 0;
+
 pub(super) type U256 = BigInt<4>;
 
 static mut COPY_PLACE_0: U256 = U256::zero();
@@ -293,7 +326,20 @@ pub unsafe fn square_assign_barret<T: DelegatedBarretParams<4>>(a: &mut U256) {
 /// It is the responsibility of the caller to make sure that is the case
 pub unsafe fn square_assign_montgomery<T: DelegatedMontParams<4>>(a: &mut U256) {
     let b = unsafe { &mut COPY_PLACE_0 };
-    delegation::memcpy(b, a);
+
+    // COMPILER BUG WORKAROUND: Use volatile copy instead of delegation::memcpy
+    // The memcpy may use optimized paths that get corrupted on riscv64
+    #[cfg(target_arch = "riscv64")]
+    {
+        for i in 0..4 {
+            let val = core::ptr::read_volatile(&a.0[i]);
+            core::ptr::write_volatile(&mut b.0[i], val);
+        }
+    }
+    #[cfg(not(target_arch = "riscv64"))]
+    {
+        delegation::memcpy(b, a);
+    }
 
     mul_assign_montgomery::<T>(a, b);
 }
@@ -308,15 +354,92 @@ pub unsafe fn mul_assign_montgomery<T: DelegatedMontParams<4>>(a: &mut U256, b: 
     let temp1 = unsafe { &mut COPY_PLACE_2 };
     let temp2 = unsafe { &mut COPY_PLACE_3 };
 
-    delegation::memcpy(temp0, a);
+    // Debug logging for specific calls
+    #[cfg(target_arch = "riscv64")]
+    let should_log = {
+        MONT_MUL_CALL_COUNT += 1;
+        // Log calls that match ecadd bigint pattern (check first limb using volatile)
+        let limb0 = unsafe { core::ptr::read_volatile(&a.0[0]) };
+        let is_ecadd_x_bigint = limb0 == 0xd783f2acffffff02u64;
+        let is_ecadd_y_bigint = limb0 == 0x9588025e5716cab7u64;
+        // Also log calls with x_coord and y_coord Montgomery form values
+        let is_ecadd_x_mont = limb0 == 0xa04b42a5dec86eefu64;
+        let is_ecadd_y_mont = limb0 == 0xb40b893f50aa3bc9u64;
+        // Also log x^2 (for x^3 = x^2 * x calculation)
+        let is_ecadd_x_sq = limb0 == 0xee5601594cddbbddu64;
+        is_ecadd_x_bigint || is_ecadd_y_bigint || is_ecadd_x_mont || is_ecadd_y_mont || is_ecadd_x_sq || MONT_MUL_CALL_COUNT <= 5
+    };
 
-    delegation::mul_low(temp0, b);
-    delegation::mul_high(a, b);
+    #[cfg(target_arch = "riscv64")]
+    if should_log {
+        u256_uart_str("[mont_mul] === CALL ");
+        u256_uart_hex_u64(MONT_MUL_CALL_COUNT as u64);
+        u256_uart_str(" ===\n");
+        u256_uart_bigint("[mont_mul] INPUT a", a);
+        u256_uart_bigint("[mont_mul] INPUT b", b);
+    }
 
+    // COMPILER BUG WORKAROUND: Use volatile copy for both operands
+    // See ai_plans/riscv-compiler-bugs.md
+    #[cfg(target_arch = "riscv64")]
+    {
+        // Volatile copy a -> temp0 for mul_low
+        for i in 0..4 {
+            let val = core::ptr::read_volatile(&a.0[i]);
+            core::ptr::write_volatile(&mut temp0.0[i], val);
+        }
+        // Volatile copy b -> SCRATCH
+        for i in 0..4 {
+            let val = core::ptr::read_volatile(&b.0[i]);
+            core::ptr::write_volatile(&mut SCRATCH.0[i], val);
+        }
+        delegation::mul_low(temp0, &SCRATCH);
+
+        // Also volatile copy a for mul_high (don't reuse temp0, it's been modified)
+        // Copy a -> a itself via volatile to force compiler to not optimize reads
+        for i in 0..4 {
+            let val = core::ptr::read_volatile(&a.0[i]);
+            core::ptr::write_volatile(&mut a.0[i], val);
+        }
+        delegation::mul_high(a, &SCRATCH);
+    }
+    #[cfg(not(target_arch = "riscv64"))]
+    {
+        delegation::memcpy(temp0, a);
+        delegation::mul_low(temp0, b);
+        delegation::mul_high(a, b);
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    if should_log {
+        u256_uart_bigint("[mont_mul] after mul_low temp0", temp0);
+        u256_uart_bigint("[mont_mul] after mul_high a", a);
+    }
+
+    // COMPILER BUG WORKAROUND: Use volatile copies for all memcpy operations
+    #[cfg(target_arch = "riscv64")]
+    {
+        // Volatile copy temp0 -> temp1
+        for i in 0..4 {
+            let val = core::ptr::read_volatile(&temp0.0[i]);
+            core::ptr::write_volatile(&mut temp1.0[i], val);
+        }
+    }
+    #[cfg(not(target_arch = "riscv64"))]
     delegation::memcpy(temp1, temp0);
 
     delegation::mul_low(temp1, T::reduction_const());
 
+    // COMPILER BUG WORKAROUND: Use volatile copies for all memcpy operations
+    #[cfg(target_arch = "riscv64")]
+    {
+        // Volatile copy temp1 -> temp2
+        for i in 0..4 {
+            let val = core::ptr::read_volatile(&temp1.0[i]);
+            core::ptr::write_volatile(&mut temp2.0[i], val);
+        }
+    }
+    #[cfg(not(target_arch = "riscv64"))]
     delegation::memcpy(temp2, temp1);
 
     delegation::mul_low(temp2, T::modulus());
@@ -332,6 +455,11 @@ pub unsafe fn mul_assign_montgomery<T: DelegatedMontParams<4>>(a: &mut U256, b: 
 
     let carry = delegation::add(a, temp1) != 0;
     sub_mod_with_carry::<T>(a, carry);
+
+    #[cfg(target_arch = "riscv64")]
+    if should_log {
+        u256_uart_bigint("[mont_mul] RESULT a", a);
+    }
 }
 
 #[cfg(test)]
