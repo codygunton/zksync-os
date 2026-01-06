@@ -36,7 +36,11 @@ pub use zksync_web3_rs;
 
 static INIT_LOGGER_ONCE: Once = Once::new();
 pub fn init_logger() {
-    INIT_LOGGER_ONCE.call_once(env_logger::init);
+    INIT_LOGGER_ONCE.call_once(|| {
+        env_logger::Builder::from_default_env()
+            .format_timestamp(None)
+            .init();
+    });
 }
 
 #[allow(dead_code)]

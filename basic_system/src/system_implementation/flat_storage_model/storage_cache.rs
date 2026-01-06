@@ -165,6 +165,26 @@ impl<
         }
     }
 
+    // RV64 diagnostic helpers
+    #[cfg(target_arch = "riscv64")]
+    fn uart_byte(b: u8) {
+        unsafe { core::ptr::write_volatile(0xa000_0200u64 as *mut u8, b); }
+    }
+    #[cfg(target_arch = "riscv64")]
+    fn uart_str(s: &str) {
+        for b in s.bytes() { Self::uart_byte(b); }
+    }
+    #[cfg(target_arch = "riscv64")]
+    fn uart_hex8(val: u8) {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        Self::uart_byte(HEX[(val >> 4) as usize]);
+        Self::uart_byte(HEX[(val & 0xf) as usize]);
+    }
+    #[cfg(target_arch = "riscv64")]
+    fn uart_hex_bytes(bytes: &[u8], max: usize) {
+        for i in 0..max.min(bytes.len()) { Self::uart_hex8(bytes[i]); }
+    }
+
     /// Read element and initialize it if needed
     fn materialize_element<'a>(
         cache: &'a mut HistoryMap<K, CacheRecord<V, StorageElementMetadata>, A>,
@@ -181,6 +201,12 @@ impl<
 
         let mut initialized_element = false;
 
+        // RV64 diagnostic: track slot address for logging
+        #[cfg(target_arch = "riscv64")]
+        let slot_addr_bytes = address.address.to_be_bytes::<20>();
+        #[cfg(target_arch = "riscv64")]
+        let slot_key_bytes = address.key.as_u8_ref();
+
         cache
             .get_or_insert(key, || {
                 // Element doesn't exist in cache yet, initialize it
@@ -188,6 +214,29 @@ impl<
 
                 let data_from_oracle = InitialStorageSlotQuery::get(oracle, &address)
                     .map_err(|_| internal_error!("Must get initial slot value from oracle"))?;
+
+                // RV64 diagnostic: Log initial value from oracle
+                #[cfg(target_arch = "riscv64")]
+                {
+                    // Create derived key to check against known missing keys
+                    let dk = zk_ee::common_structs::derive_flat_storage_key(&address.address, &address.key);
+                    let dk_bytes = dk.as_u8_ref();
+                    let is_missing_key =
+                        (dk_bytes[0] == 0x89 && dk_bytes[1] == 0x08 && dk_bytes[2] == 0xe5) ||
+                        (dk_bytes[0] == 0x29 && dk_bytes[1] == 0x22 && dk_bytes[2] == 0xc8) ||
+                        (dk_bytes[0] == 0x3a && dk_bytes[1] == 0x35 && dk_bytes[2] == 0x98) ||
+                        (dk_bytes[0] == 0xdc && dk_bytes[1] == 0xa2 && dk_bytes[2] == 0x5c);
+
+                    if is_missing_key {
+                        Self::uart_str("[INIT] dk=");
+                        Self::uart_hex_bytes(dk_bytes, 8);
+                        Self::uart_str(" val=");
+                        Self::uart_hex_bytes(data_from_oracle.initial_value.as_u8_ref(), 32);
+                        Self::uart_str(" new=");
+                        Self::uart_byte(if data_from_oracle.is_new_storage_slot { b'T' } else { b'F' });
+                        Self::uart_byte(b'\n');
+                    }
+                }
 
                 resources_policy.charge_cold_storage_read_extra(
                     ee_type,
@@ -252,6 +301,29 @@ impl<
         is_access_list: bool,
     ) -> Result<V, SystemError>
 where {
+        // RV64 diagnostic: check if this is a read from a missing key
+        #[cfg(target_arch = "riscv64")]
+        {
+            let dk = zk_ee::common_structs::derive_flat_storage_key(&address.address, &address.key);
+            let dk_bytes = dk.as_u8_ref();
+            let is_missing_key =
+                (dk_bytes[0] == 0x89 && dk_bytes[1] == 0x08 && dk_bytes[2] == 0xe5) ||
+                (dk_bytes[0] == 0x29 && dk_bytes[1] == 0x22 && dk_bytes[2] == 0xc8) ||
+                (dk_bytes[0] == 0x3a && dk_bytes[1] == 0x35 && dk_bytes[2] == 0x98) ||
+                (dk_bytes[0] == 0xdc && dk_bytes[1] == 0xa2 && dk_bytes[2] == 0x5c);
+
+            if is_missing_key {
+                Self::uart_str("[READ] dk=");
+                Self::uart_hex_bytes(dk_bytes, 8);
+                Self::uart_str(" addr=");
+                let addr_bytes = address.address.to_be_bytes::<20>();
+                Self::uart_hex_bytes(&addr_bytes, 20);
+                Self::uart_str("\n  slot=");
+                Self::uart_hex_bytes(address.key.as_u8_ref(), 32);
+                Self::uart_byte(b'\n');
+            }
+        }
+
         let (addr_data, _) = Self::materialize_element(
             &mut self.cache,
             &mut self.resources_policy,
@@ -277,6 +349,33 @@ where {
         resources: &mut R,
     ) -> Result<(V, V), SystemError>
 where {
+        // RV64 diagnostic: check if this is a write to a missing key
+        #[cfg(target_arch = "riscv64")]
+        {
+            let dk = zk_ee::common_structs::derive_flat_storage_key(&address.address, &address.key);
+            let dk_bytes = dk.as_u8_ref();
+            let is_missing_key =
+                (dk_bytes[0] == 0x89 && dk_bytes[1] == 0x08 && dk_bytes[2] == 0xe5) ||
+                (dk_bytes[0] == 0x29 && dk_bytes[1] == 0x22 && dk_bytes[2] == 0xc8) ||
+                (dk_bytes[0] == 0x3a && dk_bytes[1] == 0x35 && dk_bytes[2] == 0x98) ||
+                (dk_bytes[0] == 0xdc && dk_bytes[1] == 0xa2 && dk_bytes[2] == 0x5c);
+
+            if is_missing_key {
+                Self::uart_str("[WRITE_BEGIN] dk=");
+                Self::uart_hex_bytes(dk_bytes, 8);
+                Self::uart_str(" new_val=");
+                // V is Bytes32, use transmute to get bytes
+                let new_val_bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        new_value as *const V as *const u8,
+                        32
+                    )
+                };
+                Self::uart_hex_bytes(new_val_bytes, 32);
+                Self::uart_byte(b'\n');
+            }
+        }
+
         let (mut addr_data, is_warm_read) = Self::materialize_element(
             &mut self.cache,
             &mut self.resources_policy,
@@ -290,6 +389,39 @@ where {
         )?;
 
         let val_current = addr_data.current().value();
+
+        // RV64 diagnostic: log current and initial values before write
+        #[cfg(target_arch = "riscv64")]
+        {
+            let dk = zk_ee::common_structs::derive_flat_storage_key(&address.address, &address.key);
+            let dk_bytes = dk.as_u8_ref();
+            let is_missing_key =
+                (dk_bytes[0] == 0x89 && dk_bytes[1] == 0x08 && dk_bytes[2] == 0xe5) ||
+                (dk_bytes[0] == 0x29 && dk_bytes[1] == 0x22 && dk_bytes[2] == 0xc8) ||
+                (dk_bytes[0] == 0x3a && dk_bytes[1] == 0x35 && dk_bytes[2] == 0x98) ||
+                (dk_bytes[0] == 0xdc && dk_bytes[1] == 0xa2 && dk_bytes[2] == 0x5c);
+
+            if is_missing_key {
+                Self::uart_str("[WRITE_PRE] curr=");
+                let curr_bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        val_current as *const V as *const u8,
+                        32
+                    )
+                };
+                Self::uart_hex_bytes(curr_bytes, 32);
+                Self::uart_str(" init=");
+                let init_val = addr_data.initial().value();
+                let init_bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        init_val as *const V as *const u8,
+                        32
+                    )
+                };
+                Self::uart_hex_bytes(init_bytes, 32);
+                Self::uart_byte(b'\n');
+            }
+        }
 
         // Try to get initial value at the beginning of the tx.
         let val_at_tx_start = addr_data.committed().value().clone();
@@ -311,6 +443,40 @@ where {
                 Ok(())
             })
         })?;
+
+        // RV64 diagnostic: log value after write
+        #[cfg(target_arch = "riscv64")]
+        {
+            let dk = zk_ee::common_structs::derive_flat_storage_key(&address.address, &address.key);
+            let dk_bytes = dk.as_u8_ref();
+            let is_missing_key =
+                (dk_bytes[0] == 0x89 && dk_bytes[1] == 0x08 && dk_bytes[2] == 0xe5) ||
+                (dk_bytes[0] == 0x29 && dk_bytes[1] == 0x22 && dk_bytes[2] == 0xc8) ||
+                (dk_bytes[0] == 0x3a && dk_bytes[1] == 0x35 && dk_bytes[2] == 0x98) ||
+                (dk_bytes[0] == 0xdc && dk_bytes[1] == 0xa2 && dk_bytes[2] == 0x5c);
+
+            if is_missing_key {
+                Self::uart_str("[WRITE_POST] curr=");
+                let new_curr = addr_data.current().value();
+                let curr_bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        new_curr as *const V as *const u8,
+                        32
+                    )
+                };
+                Self::uart_hex_bytes(curr_bytes, 32);
+                Self::uart_str(" init=");
+                let init_val = addr_data.initial().value();
+                let init_bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        init_val as *const V as *const u8,
+                        32
+                    )
+                };
+                Self::uart_hex_bytes(init_bytes, 32);
+                Self::uart_byte(b'\n');
+            }
+        }
 
         Ok((old_value, val_at_tx_start))
     }

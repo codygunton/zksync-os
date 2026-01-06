@@ -96,9 +96,12 @@ impl<IOTypes: SystemIOTypesConfig> UsizeSerializable for InitialStorageSlotData<
 impl<IOTypes: SystemIOTypesConfig> UsizeDeserializable for InitialStorageSlotData<IOTypes> {
     const USIZE_LEN: usize = <Self as UsizeSerializable>::USIZE_LEN;
 
+    #[inline(never)]
     fn from_iter(src: &mut impl ExactSizeIterator<Item = usize>) -> Result<Self, InternalError> {
         let is_new_storage_slot = UsizeDeserializable::from_iter(src)?;
-        let initial_value = UsizeDeserializable::from_iter(src)?;
+        let initial_value: IOTypes::StorageValue = UsizeDeserializable::from_iter(src)?;
+
+        // RV64 diagnostic: removed (caused compilation issues)
 
         let new = Self {
             is_new_storage_slot,

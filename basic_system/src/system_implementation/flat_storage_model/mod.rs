@@ -155,13 +155,123 @@ impl<
         let mut state_diffs_hasher = crypto::blake2s::Blake2s256::new();
 
         // Iterate through all modified storage entries and hash them deterministically
+        // RV64 diagnostic: count entries and track skipped ones
+        #[cfg(target_arch = "riscv64")]
+        let mut _total_count: usize = 0;
+        #[cfg(target_arch = "riscv64")]
+        let mut _skip_count: usize = 0;
+        #[cfg(target_arch = "riscv64")]
+        let mut _included_count: usize = 0;
+
+        // RV64 diagnostic helpers
+        #[cfg(target_arch = "riscv64")]
+        const UART_ADDR: u64 = 0xa000_0200;
+        #[cfg(target_arch = "riscv64")]
+        fn uart_byte(b: u8) {
+            unsafe { core::ptr::write_volatile(UART_ADDR as *mut u8, b); }
+        }
+        #[cfg(target_arch = "riscv64")]
+        fn uart_str(s: &str) {
+            for b in s.bytes() { uart_byte(b); }
+        }
+        #[cfg(target_arch = "riscv64")]
+        fn uart_hex8(val: u8) {
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            uart_byte(HEX[(val >> 4) as usize]);
+            uart_byte(HEX[(val & 0xf) as usize]);
+        }
+        #[cfg(target_arch = "riscv64")]
+        fn uart_hex_bytes(bytes: &[u8], max: usize) {
+            for i in 0..max.min(bytes.len()) { uart_hex8(bytes[i]); }
+        }
+        #[cfg(target_arch = "riscv64")]
+        fn uart_usize(val: usize) {
+            for i in (0..16).rev() { uart_hex8(((val >> (i*4)) & 0xf) as u8); }
+        }
+
         storage_cache
             .0
             .cache
             .apply_to_all_updated_elements::<_, ()>(|l, r, k| {
+                #[cfg(target_arch = "riscv64")]
+                {
+                    _total_count += 1;
+                }
+
+                // Get the derived key for this entry to check against known missing keys
+                #[cfg(target_arch = "riscv64")]
+                let derived_key_for_check = derive_flat_storage_key_with_hasher(&k.address, &k.key, &mut crypto::blake2s::Blake2s256::new());
+
+                // RV64: Log EVERY entry with initial vs current for debugging
+                #[cfg(target_arch = "riscv64")]
+                {
+                    // Check if this is one of the 4 known missing keys
+                    let dk_bytes = derived_key_for_check.as_u8_ref();
+                    let is_missing_key =
+                        // 8908e55383727f855f11109219d27468fa62def21dd6bc23e7f85cb7e4697f51
+                        (dk_bytes[0] == 0x89 && dk_bytes[1] == 0x08 && dk_bytes[2] == 0xe5) ||
+                        // 2922c8a9a89a4cb23e2396657c4ade6108f800ee859c1a8c88b403ecbad8f89c
+                        (dk_bytes[0] == 0x29 && dk_bytes[1] == 0x22 && dk_bytes[2] == 0xc8) ||
+                        // 3a3598499bbe8a9d7414cbf8ec28568df5c9d164da388b3bdb68a52d53e184e8
+                        (dk_bytes[0] == 0x3a && dk_bytes[1] == 0x35 && dk_bytes[2] == 0x98) ||
+                        // dca25cf9f452b663b4f8c41c6a362a2cc8c5f65a2dd605b626670978ab71f3ba
+                        (dk_bytes[0] == 0xdc && dk_bytes[1] == 0xa2 && dk_bytes[2] == 0x5c);
+
+                    if is_missing_key {
+                        // Log detailed info for the 4 known missing keys
+                        uart_str("[MISSING_KEY] dk=");
+                        uart_hex_bytes(dk_bytes, 8);
+                        uart_str("\n  init=");
+                        uart_hex_bytes(l.value().as_u8_ref(), 32);
+                        uart_str("\n  curr=");
+                        uart_hex_bytes(r.value().as_u8_ref(), 32);
+                        uart_str("\n  eq=");
+                        uart_byte(if l.value() == r.value() { b'T' } else { b'F' });
+                        uart_byte(b'\n');
+
+                        // Also log raw usize values for comparison
+                        uart_str("  init_raw: ");
+                        let init_arr = l.value().as_u64_array_ref();
+                        for i in 0..4 {
+                            uart_usize(init_arr[i] as usize);
+                            uart_byte(b' ');
+                        }
+                        uart_byte(b'\n');
+                        uart_str("  curr_raw: ");
+                        let curr_arr = r.value().as_u64_array_ref();
+                        for i in 0..4 {
+                            uart_usize(curr_arr[i] as usize);
+                            uart_byte(b' ');
+                        }
+                        uart_byte(b'\n');
+
+                        // Check byte-by-byte equality
+                        let init_bytes = l.value().as_u8_ref();
+                        let curr_bytes = r.value().as_u8_ref();
+                        let mut diff_count = 0;
+                        for i in 0..32 {
+                            if init_bytes[i] != curr_bytes[i] {
+                                diff_count += 1;
+                            }
+                        }
+                        uart_str("  diff_bytes=");
+                        uart_hex8(diff_count);
+                        uart_byte(b'\n');
+                    }
+                }
+
                 // Skip entries where the value didn't actually change
                 if l.value() == r.value() {
+                    #[cfg(target_arch = "riscv64")]
+                    {
+                        _skip_count += 1;
+                    }
                     return Ok(());
+                }
+
+                #[cfg(target_arch = "riscv64")]
+                {
+                    _included_count += 1;
                 }
                 let derived_key =
                     derive_flat_storage_key_with_hasher(&k.address, &k.key, &mut hasher);

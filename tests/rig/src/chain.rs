@@ -742,9 +742,26 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
                         // Compute expected storage diff hash from forward run
                         use crypto::MiniDigest;
                         let mut hasher = crypto::blake2s::Blake2s256::new();
+                        let mut forward_count = 0;
+                        let mut forward_entries: Vec<(String, String)> = Vec::new();
                         for StorageWrite { key, value, .. } in block_output.storage_writes.iter() {
                             hasher.update(key.0.as_ref());
                             hasher.update(value.0.as_ref());
+                            forward_entries.push((hex::encode(key.0.as_ref()), hex::encode(value.0.as_ref())));
+                            forward_count += 1;
+                        }
+                        info!("Forward run storage writes count: {}", forward_count);
+                        // Log the 4 missing entries specifically
+                        let missing_keys = [
+                            "2922c8a9a89a4cb23e2396657c4ade6108f800ee859c1a8c88b403ecbad8f89c",
+                            "3a3598499bbe8a9d7414cbf8ec28568df5c9d164da388b3bdb68a52d53e184e8",
+                            "8908e55383727f855f11109219d27468fa62def21dd6bc23e7f85cb7e4697f51",
+                            "dca25cf9f452b663b4f8c41c6a362a2cc8c5f65a2dd605b626670978ab71f3ba",
+                        ];
+                        for (k, v) in forward_entries.iter() {
+                            if missing_keys.contains(&k.as_str()) {
+                                info!("MISSING_KEY: key={}, value={}", k, v);
+                            }
                         }
                         let forward_storage_diff_hash = hasher.finalize();
                         info!(
