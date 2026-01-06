@@ -98,8 +98,28 @@ impl<'external, S: EthereumLikeTypes> ExecutionContext<'_, 'external, S> {
         let (output, rest) = return_memory.split_at_mut(return_values.returndata.len());
         self.return_memory = rest;
 
+        // WORKAROUND: Use volatile copy on RV64 to prevent LLVM optimization corruption.
+        // See ai_plans/block-19299001-debugging-notes.md for details.
+        // The standard write_copy_of_slice causes data corruption when read back on Zisk.
+        #[cfg(target_arch = "riscv64")]
+        let returndata = {
+            let src = return_values.returndata;
+            for i in 0..src.len() {
+                unsafe {
+                    let byte = core::ptr::read_volatile(&src[i]);
+                    core::ptr::write_volatile(output[i].as_mut_ptr(), byte);
+                }
+            }
+            // Compiler fence to ensure volatile writes are visible before returning slice
+            core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+            unsafe { core::slice::from_raw_parts(output.as_ptr() as *const u8, output.len()) }
+        };
+
+        #[cfg(not(target_arch = "riscv64"))]
+        let returndata = output.write_copy_of_slice(return_values.returndata);
+
         Ok(ReturnValues {
-            returndata: output.write_copy_of_slice(return_values.returndata),
+            returndata,
             ..return_values
         })
     }
