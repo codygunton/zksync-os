@@ -8,7 +8,7 @@
 #[allow(clippy::all)]
 #[allow(unused_imports, dead_code)]
 #[cfg(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     feature = "proving",
     feature = "testing",
     test
@@ -17,7 +17,7 @@ mod ark_ff_delegation;
 #[allow(clippy::all)]
 #[allow(unused_imports, dead_code)]
 #[cfg(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     feature = "proving",
     feature = "testing",
     test
@@ -40,21 +40,35 @@ pub mod sha3;
 pub use ::k256 as rust_k256;
 
 #[cfg(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     feature = "proving",
     test
 ))]
 pub use self::ark_ff_delegation::{BigInt, BigInteger};
 
 #[cfg(not(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     feature = "proving",
     test
 )))]
 pub use self::ark_ff::{BigInt, BigInteger};
 
 #[cfg(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    feature = "proving",
+    test
+))]
+pub use crate::ark_ff_delegation::Fp;
+
+#[cfg(not(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    feature = "proving",
+    test
+)))]
+pub use ark_ff::Fp;
+
+#[cfg(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     feature = "proving",
     feature = "testing",
     test
@@ -68,7 +82,7 @@ pub use ark_ff;
 pub use ark_serialize;
 
 #[cfg(any(
-    all(target_arch = "riscv32", feature = "bigint_ops"),
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
     feature = "proving",
     feature = "testing",
     test

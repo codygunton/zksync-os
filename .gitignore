@@ -17,6 +17,7 @@ tests/contracts_sol/*/node_modules
 
 tests/instances/*/*.svg
 tests/instances/**/*.bench
+tests/instances/eth_runner/target
 
 tests/instances/db/*
 

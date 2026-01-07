@@ -1,55 +1,41 @@
-#[cfg(all(target_arch = "riscv32", not(feature = "bigint_ops")))]
+#[cfg(all(any(target_arch = "riscv32", target_arch = "riscv64"), not(feature = "bigint_ops")))]
 compile_error!("feature `bigint_ops` must be activated for RISC-V target");
-
-#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
-pub fn init() {
-    unsafe {
-        MODULUS.as_mut_ptr().write(MODULUS_CONSTANT);
-        REDUCTION_CONST.as_mut_ptr().write(MONT_REDUCTION_CONSTANT);
-    }
-}
 
 pub type Fq = Fp256<MontBackend<FqConfig, 4>>;
 use crate::ark_ff_delegation::{BigInt, BigIntMacro, Fp, Fp256, MontBackend, MontConfig};
 use crate::bigint_delegation::{u256, DelegatedModParams, DelegatedMontParams};
 use ark_ff::ark_ff_macros::unroll_for_loops;
 use ark_ff::{AdditiveGroup, Zero};
-use core::mem::MaybeUninit;
 
 type B = BigInt<4>;
 type F = Fp<MontBackend<FqConfig, 4usize>, 4usize>;
 
-// we also need few empty representations
-// static mut MINUS_ONE_REPR: MaybeUninit<[u32; 8]> = MaybeUninit::uninit();
-static mut MODULUS: MaybeUninit<B> = MaybeUninit::uninit();
-static mut REDUCTION_CONST: MaybeUninit<B> = MaybeUninit::uninit();
-
-const MODULUS_CONSTANT: B =
+static MODULUS_CONSTANT: B =
     BigIntMacro!("21888242871839275222246405745257275088696311157297823662689037894645226208583");
 // it's - MODULUS^-1 mod 2^256
-const MONT_REDUCTION_CONSTANT: B =
+static MONT_REDUCTION_CONSTANT: B =
     BigIntMacro!("111032442853175714102588374283752698368366046808579839647964533820976443843465");
 
-// // a^-1 = a ^ (p - 2)
-// const INVERSION_POW: B = BigInt([
-//     4332616871279656263u64 - 2,
-//     10917124144477883021u64,
-//     13281191951274694749u64,
-//     3486998266802970665u64,
-// ]);
+// a^-1 = a ^ (p - 2), using Fermat's little theorem
+const INVERSION_POW: B = BigInt([
+    4332616871279656263u64 - 2,  // Subtract 2 from lowest limb
+    10917124144477883021u64,
+    13281191951274694749u64,
+    3486998266802970665u64,
+]);
 
 #[derive(Default)]
 struct FqParams;
 
 impl DelegatedModParams<4> for FqParams {
     unsafe fn modulus() -> &'static BigInt<4> {
-        unsafe { MODULUS.assume_init_ref() }
+        &MODULUS_CONSTANT
     }
 }
 
 impl DelegatedMontParams<4> for FqParams {
     unsafe fn reduction_const() -> &'static BigInt<4> {
-        unsafe { REDUCTION_CONST.assume_init_ref() }
+        &MONT_REDUCTION_CONSTANT
     }
 }
 
@@ -134,16 +120,7 @@ impl MontConfig<4usize> for FqConfig {
 
     #[inline(always)]
     fn inverse(a: &Fp<MontBackend<Self, 4>, 4>) -> Option<Fp<MontBackend<Self, 4>, 4>> {
-        return __gcd_inverse(a);
-
-        // use ark_ff::Field;
-        // if a.is_zero() {
-        //     return None;
-        // }
-
-        // let inverse = a.pow(INVERSION_POW);
-
-        // Some(inverse)
+        __gcd_inverse(a)
     }
 
     // default impl
@@ -170,13 +147,77 @@ fn __gcd_inverse(a: &F) -> Option<F> {
     use ark_ff::BigInteger;
     use ark_ff::PrimeField;
 
+    // UART logging for RV64 debugging
+    #[cfg(target_arch = "riscv64")]
+    fn log_gcd(msg: &str, val: &B) {
+        static mut LOG_COUNT: u32 = 0;
+        unsafe {
+            LOG_COUNT += 1;
+            if LOG_COUNT > 50 { return; } // Limit logging
+        }
+        const HELLO_MARKER: u32 = u32::MAX;
+        fn csr_write_word(word: usize) {
+            unsafe {
+                core::arch::asm!(
+                    "csrrw x0, 0x7c0, {rd}",
+                    rd = in(reg) word,
+                    options(nomem, nostack, preserves_flags)
+                )
+            }
+        }
+        fn write_str(s: &str) {
+            let len = s.len();
+            if len == 0 { return; }
+            csr_write_word(HELLO_MARKER as usize);
+            csr_write_word(len.next_multiple_of(4) / 4 + 1);
+            csr_write_word(len);
+            let bytes = s.as_bytes();
+            let mut i = 0;
+            while i + 4 <= len {
+                let word = u32::from_le_bytes([bytes[i], bytes[i+1], bytes[i+2], bytes[i+3]]);
+                csr_write_word(word as usize);
+                i += 4;
+            }
+            if i < len {
+                let mut buf = [0u8; 4];
+                for j in 0..(len - i) { buf[j] = bytes[i + j]; }
+                csr_write_word(u32::from_le_bytes(buf) as usize);
+            }
+        }
+        fn write_hex_u64(v: u64) {
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            let mut buf = [0u8; 16];
+            for i in 0..16 {
+                buf[15 - i] = HEX[((v >> (i * 4)) & 0xf) as usize];
+            }
+            let s = unsafe { core::str::from_utf8_unchecked(&buf) };
+            write_str(s);
+        }
+        write_str("[GUEST] [gcd_inv] ");
+        write_str(msg);
+        write_str(" limb0=0x");
+        write_hex_u64(unsafe { core::ptr::read_volatile(&val.0[0]) });
+        write_str("\n");
+    }
+    #[cfg(not(target_arch = "riscv64"))]
+    fn log_gcd(_msg: &str, _val: &B) {}
+
     let mut u = a.0;
     let mut v = F::MODULUS;
     let mut b = Fp::new_unchecked(F::R2); // Avoids unnecessary reduction step.
     let mut c = Fp::zero();
     let modulus = F::MODULUS;
 
-    while !u256::is_one(&mut u) && !u256::is_one(&mut v) {
+    log_gcd("input a", &a.0);
+    log_gcd("initial u", &u);
+    log_gcd("initial v", &v);
+    log_gcd("initial b", &b.0);
+
+    let mut iter_count = 0u32;
+    while !u256::is_one(&u) && !u256::is_one(&v) {
+        iter_count += 1;
+        if iter_count > 1000 { break; } // Safety limit
+
         while u.is_even() {
             u.div2();
 
@@ -185,9 +226,6 @@ fn __gcd_inverse(a: &F) -> Option<F> {
             } else {
                 let _carry = u256::add_assign(&mut b.0, &modulus);
                 b.0.div2();
-                // if !Self::MODULUS_HAS_SPARE_BIT && carry {
-                //     (b.0).0[N - 1] |= 1 << 63;
-                // }
             }
         }
 
@@ -199,13 +237,9 @@ fn __gcd_inverse(a: &F) -> Option<F> {
             } else {
                 let _carry = u256::add_assign(&mut c.0, &modulus);
                 c.0.div2();
-                // if !Self::MODULUS_HAS_SPARE_BIT && carry {
-                //     (c.0).0[N - 1] |= 1 << 63;
-                // }
             }
         }
 
-        // if v < u {
         if v.lt(&u) {
             u256::sub_assign(&mut u, &v);
             b -= &c;
@@ -213,9 +247,25 @@ fn __gcd_inverse(a: &F) -> Option<F> {
             u256::sub_assign(&mut v, &u);
             c -= &b;
         }
+
+        // Log every 100 iterations
+        if iter_count % 100 == 0 {
+            log_gcd("u @iter", &u);
+            log_gcd("b @iter", &b.0);
+        }
     }
 
-    if u256::is_one(&mut u) {
+    log_gcd("final u", &u);
+    log_gcd("final b", &b.0);
+    log_gcd("final c", &c.0);
+
+    let result = if u256::is_one(&u) { b } else { c };
+
+    // Verify result
+    let check = *a * result;
+    log_gcd("a*result", &check.0);
+
+    if u256::is_one(&u) {
         Some(b)
     } else {
         Some(c)
@@ -227,17 +277,10 @@ mod test {
     use super::Fq;
     use ark_ff::{Field, One, UniformRand, Zero};
 
-    fn init() {
-        super::init();
-        crate::bigint_delegation::init();
-    }
-
     #[ignore = "requires single threaded runner"]
     #[test]
     fn test_mul_properties() {
         const ITERATIONS: usize = 1000;
-        init();
-
         use ark_std::test_rng;
         let mut rng = test_rng();
         let zero = Fq::zero();
@@ -313,7 +356,6 @@ mod test {
 
         type RefFq = ark_bn254::Fq;
 
-        init();
         let a = Fq::from_str("-1").unwrap();
         let ref_a = RefFq::from_str("-1").unwrap();
 
@@ -333,7 +375,6 @@ mod test {
     #[ignore = "requires single threaded runner"]
     #[test]
     fn test_bilinearity() {
-        init();
         for _ in 0..ITERATIONS {
             let mut rng = test_rng();
             let a: <Bn254 as Pairing>::G1 = UniformRand::rand(&mut rng);
@@ -364,7 +405,6 @@ mod test {
     #[ignore = "requires single threaded runner"]
     #[test]
     fn test_multi_pairing() {
-        init();
         for _ in 0..ITERATIONS {
             let rng = &mut test_rng();
 
@@ -381,7 +421,6 @@ mod test {
     #[ignore = "requires single threaded runner"]
     #[test]
     fn test_final_exp() {
-        init();
         for _ in 0..ITERATIONS {
             let rng = &mut test_rng();
             let fp_ext = <Bn254 as Pairing>::TargetField::rand(rng);

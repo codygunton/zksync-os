@@ -1,11 +1,12 @@
+use zk_ee::common_traits::TryExtend;
+use zk_ee::out_of_return_memory;
 use zk_ee::system::base_system_functions::{Keccak256Errors, SystemFunction};
 use zk_ee::system::errors::subsystem::SubsystemError;
 
 use super::*;
 
 use crate::cost_constants::{
-    KECCAK256_BASE_NATIVE_COST, KECCAK256_CHUNK_SIZE, KECCAK256_PER_WORD_COST_ERGS,
-    KECCAK256_ROUND_NATIVE_COST, KECCAK256_STATIC_COST_ERGS,
+    KECCAK256_BASE_NATIVE_COST, KECCAK256_CHUNK_SIZE, KECCAK256_ROUND_NATIVE_COST,
 };
 
 ///
@@ -15,7 +16,7 @@ pub struct Keccak256Impl;
 
 impl<R: Resources> SystemFunction<R, Keccak256Errors> for Keccak256Impl {
     /// Returns `OutOfGas` if not enough resources provided.
-    fn execute<D: Extend<u8> + ?Sized, A: core::alloc::Allocator + Clone>(
+    fn execute<D: TryExtend<u8> + ?Sized, A: core::alloc::Allocator + Clone>(
         input: &[u8],
         output: &mut D,
         resources: &mut R,
@@ -34,23 +35,21 @@ pub fn keccak256_native_cost<R: Resources>(len: usize) -> R::Native {
     R::Native::from_computational(native_cost)
 }
 
-fn keccak256_as_system_function_inner<D: ?Sized + Extend<u8>, R: Resources>(
+fn keccak256_as_system_function_inner<D: ?Sized + TryExtend<u8>, R: Resources>(
     src: &[u8],
     dst: &mut D,
     resources: &mut R,
 ) -> Result<(), SubsystemError<Keccak256Errors>> {
-    let words = src.len().div_ceil(32);
-    let ergs_cost = KECCAK256_STATIC_COST_ERGS + KECCAK256_PER_WORD_COST_ERGS.times(words as u64);
+    let ergs_cost = evm_interpreter::keccak256_ergs_cost(src.len());
     let native_cost = keccak256_native_cost::<R>(src.len());
     resources.charge(&R::from_ergs_and_native(ergs_cost, native_cost))?;
 
-    use crypto::sha3::Keccak256;
+    // Use MiniDigest trait which has volatile read workarounds for RV64
+    // See crypto/src/sha3/mod.rs for details
     use crypto::MiniDigest;
-    let mut hasher = Keccak256::new();
-    hasher.update(src);
-    let hash = hasher.finalize();
+    let hash = crypto::sha3::Keccak256::digest(src);
 
-    dst.extend(hash);
+    dst.try_extend(hash).map_err(|_| out_of_return_memory!())?;
 
     Ok(())
 }

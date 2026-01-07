@@ -42,13 +42,30 @@ impl crate::MiniDigest for Blake2s256 {
 
     #[inline(always)]
     fn digest(input: impl AsRef<[u8]>) -> Self::HashOutput {
-        <blake2::Blake2s256 as blake2::Digest>::digest(input).into()
+        use blake2::Digest;
+        let mut hasher = <blake2::Blake2s256 as Digest>::new();
+        // WORKAROUND: Use volatile reads and byte-by-byte updates to prevent
+        // compiler optimization issues on RV64 (ZisK). Passing slices directly
+        // to the hasher can produce incorrect hashes when the slice comes from
+        // certain memory regions. See ai_plans/riscv-compiler-bugs.md.
+        let slice = input.as_ref();
+        for i in 0..slice.len() {
+            let byte = unsafe { core::ptr::read_volatile(&slice[i]) };
+            hasher.update(&[byte]);
+        }
+        hasher.finalize().into()
     }
 
     #[inline(always)]
     fn update(&mut self, input: impl AsRef<[u8]>) {
         use blake2::Digest;
-        self.inner.update(input);
+        // WORKAROUND: Use volatile reads and byte-by-byte updates.
+        // See digest() comment for details.
+        let slice = input.as_ref();
+        for i in 0..slice.len() {
+            let byte = unsafe { core::ptr::read_volatile(&slice[i]) };
+            self.inner.update(&[byte]);
+        }
     }
 
     #[inline(always)]

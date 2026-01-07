@@ -2,10 +2,10 @@ use super::{delegation::*, DelegatedU256};
 use core::mem::MaybeUninit;
 
 static mut SCRATCH_FOR_MUT: MaybeUninit<DelegatedU256> = MaybeUninit::uninit();
-#[cfg(target_arch = "riscv32")]
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 static mut SCRATCH_FOR_REF: MaybeUninit<DelegatedU256> = MaybeUninit::uninit();
 
-#[cfg(target_arch = "riscv32")]
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 const ROM_BOUND: usize = 1 << 21;
 
 impl Clone for DelegatedU256 {
@@ -66,7 +66,7 @@ pub(super) unsafe fn with_ram_operand<T, F: FnMut(*const DelegatedU256) -> T>(
     operand: *const DelegatedU256,
     mut f: F,
 ) -> T {
-    #[cfg(target_arch = "riscv32")]
+    #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
     {
         let mut scratch_mu = MaybeUninit::<DelegatedU256>::uninit();
 
@@ -80,7 +80,7 @@ pub(super) unsafe fn with_ram_operand<T, F: FnMut(*const DelegatedU256) -> T>(
         f(scratch_ptr)
     }
 
-    #[cfg(not(target_arch = "riscv32"))]
+    #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
     {
         f(operand)
     }
@@ -90,7 +90,7 @@ pub(super) unsafe fn with_ram_operand<T, F: FnMut(*const DelegatedU256) -> T>(
 /// # Safety
 /// `operand` must be 32 bytes aligned and point to 32 bytes of accessible memory.
 pub(super) unsafe fn copy_to_scratch(operand: *const DelegatedU256) -> *mut DelegatedU256 {
-    #[cfg(target_arch = "riscv32")]
+    #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
     {
         if operand.addr() < ROM_BOUND {
             SCRATCH_FOR_MUT.as_mut_ptr().write(operand.read());
@@ -105,7 +105,7 @@ pub(super) unsafe fn copy_to_scratch(operand: *const DelegatedU256) -> *mut Dele
         }
     }
 
-    #[cfg(not(target_arch = "riscv32"))]
+    #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
     #[allow(static_mut_refs)]
     {
         SCRATCH_FOR_MUT.as_mut_ptr().write(operand.read());
@@ -117,7 +117,7 @@ pub(super) unsafe fn copy_to_scratch(operand: *const DelegatedU256) -> *mut Dele
 /// # Safety
 /// `operand` must be 32 bytes aligned and point to 32 bytes of accessible memory.
 pub unsafe fn copy_if_needed(operand: *const DelegatedU256) -> *const DelegatedU256 {
-    #[cfg(target_arch = "riscv32")]
+    #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
     unsafe {
         if operand.addr() < ROM_BOUND {
             SCRATCH_FOR_REF.write(operand.read());
@@ -127,7 +127,7 @@ pub unsafe fn copy_if_needed(operand: *const DelegatedU256) -> *const DelegatedU
         }
     }
 
-    #[cfg(not(target_arch = "riscv32"))]
+    #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
     {
         operand
     }

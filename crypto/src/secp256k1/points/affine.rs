@@ -1,6 +1,7 @@
 use crate::k256::{elliptic_curve::subtle::Choice, CompressedPoint, EncodedPoint, FieldBytes};
 
 use crate::secp256k1::field::{FieldElement, FieldElementConst};
+use crate::secp256k1::uart_log;
 
 use super::{jacobian::JacobianConst, AffineStorage, Jacobian};
 
@@ -155,8 +156,122 @@ impl Affine {
         })
     }
 
+    /// Decompress with logging to trace corruption
+    pub(crate) fn decompress_with_logging(x_bytes: &FieldBytes, y_is_odd: bool, tx_num: usize) -> Option<Self> {
+        #[allow(deprecated)]
+        let len = x_bytes.as_slice().len();
+        debug_assert!(len == 32);
+
+        uart_log::write_str("[decompress] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" input x_bytes=");
+        #[allow(deprecated)]
+        uart_log::write_hex_slice(x_bytes.as_slice());
+        uart_log::newline();
+
+        #[allow(deprecated)]
+        let x_array: &[u8; 32] = x_bytes.as_slice().try_into().ok()?;
+
+        uart_log::write_str("[decompress] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" x_array=");
+        uart_log::write_hex_slice(x_array);
+        uart_log::newline();
+
+        let x = FieldElement::from_bytes(x_array)?;
+
+        // Log the field element right after from_bytes
+        let x_back = x.to_bytes();
+        uart_log::write_str("[decompress] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" x.to_bytes() after from_bytes=");
+        uart_log::write_hex_slice(&x_back);
+        uart_log::newline();
+
+        let mut ret = Affine::DEFAULT;
+
+        uart_log::write_str("[decompress] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" calling set_xo");
+        uart_log::newline();
+
+        if ret.set_xo(&x, y_is_odd) {
+            // Log after set_xo
+            let ret_x = ret.x.to_bytes();
+            uart_log::write_str("[decompress] TX#");
+            uart_log::write_usize(tx_num);
+            uart_log::write_str(" ret.x.to_bytes() after set_xo=");
+            uart_log::write_hex_slice(&ret_x);
+            uart_log::newline();
+
+            Some(ret)
+        } else {
+            uart_log::write_str("[decompress] TX#");
+            uart_log::write_usize(tx_num);
+            uart_log::write_str(" set_xo returned false");
+            uart_log::newline();
+            None
+        }
+    }
+
+    /// Decompress that writes to output parameter to avoid return value corruption.
+    /// Returns true on success, false on failure.
+    pub(crate) fn decompress_to(x_bytes: &FieldBytes, y_is_odd: bool, out: &mut Self) -> bool {
+        Self::decompress_to_impl(x_bytes, y_is_odd, out, None)
+    }
+
+    /// Decompress with optional logging for debugging
+    pub(crate) fn decompress_to_with_logging(x_bytes: &FieldBytes, y_is_odd: bool, out: &mut Self, tx_num: usize) -> bool {
+        Self::decompress_to_impl(x_bytes, y_is_odd, out, Some(tx_num))
+    }
+
+    fn decompress_to_impl(x_bytes: &FieldBytes, y_is_odd: bool, out: &mut Self, tx_num: Option<usize>) -> bool {
+        #[allow(deprecated)]
+        let len = x_bytes.as_slice().len();
+        debug_assert!(len == 32);
+
+        // Use volatile reads to copy bytes to local buffer to prevent
+        // RISC-V 64-bit compiler optimization bugs
+        #[allow(deprecated)]
+        let slice = x_bytes.as_slice();
+        let mut local_bytes = [0u8; 32];
+        for i in 0..32 {
+            unsafe {
+                local_bytes[i] = core::ptr::read_volatile(&slice[i]);
+            }
+        }
+
+        // Use from_bytes_to to avoid Copy trait corruption on RISC-V 64-bit
+        let mut x = FieldElement::ZERO;
+        if !FieldElement::from_bytes_to(&local_bytes, &mut x) {
+            return false;
+        }
+
+        // Use volatile writes to prevent compiler optimization issues
+        unsafe {
+            core::ptr::write_volatile(&mut out.x, FieldElement::ZERO);
+            core::ptr::write_volatile(&mut out.y, FieldElement::ZERO);
+            core::ptr::write_volatile(&mut out.infinity, false);
+        }
+
+        if let Some(tx) = tx_num {
+            if out.set_xo_with_logging(&x, y_is_odd, tx) {
+                true
+            } else {
+                false
+            }
+        } else {
+            if out.set_xo(&x, y_is_odd) {
+                true
+            } else {
+                false
+            }
+        }
+    }
+
     fn set_xo(&mut self, x: &FieldElement, y_is_odd: bool) -> bool {
-        self.y = *x;
+        // Use volatile copy to prevent RISC-V 64-bit compiler optimization bugs
+        self.y.volatile_copy_from(x);
         self.y.square_in_place();
         self.y *= x;
         self.y += 7;
@@ -168,7 +283,93 @@ impl Affine {
             self.y.negate_in_place(1);
         }
 
-        self.x = *x;
+        // Use volatile copy to prevent RISC-V 64-bit compiler optimization bugs
+        self.x.volatile_copy_from(x);
+        self.infinity = false;
+
+        ret
+    }
+
+    /// set_xo with logging for debugging
+    fn set_xo_with_logging(&mut self, x: &FieldElement, y_is_odd: bool, tx_num: usize) -> bool {
+        uart_log::write_str("[set_xo] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" input x=");
+        uart_log::write_hex_slice(&x.to_bytes());
+        uart_log::newline();
+
+        // Use volatile copy to prevent RISC-V 64-bit compiler optimization bugs
+        self.y.volatile_copy_from(x);
+        let y_after_assign = self.y.to_bytes();
+        uart_log::write_str("[set_xo] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" after y=x: ");
+        uart_log::write_hex_slice(&y_after_assign);
+        uart_log::newline();
+
+        self.y.square_in_place();
+        let y_after_sq = self.y.to_bytes();
+        uart_log::write_str("[set_xo] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" after y.square: ");
+        uart_log::write_hex_slice(&y_after_sq);
+        uart_log::newline();
+
+        self.y *= x;
+        let y_after_mul = self.y.to_bytes();
+        uart_log::write_str("[set_xo] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" after y*=x (x^3): ");
+        uart_log::write_hex_slice(&y_after_mul);
+        uart_log::newline();
+
+        self.y += 7;
+        let y_after_add = self.y.to_bytes();
+        uart_log::write_str("[set_xo] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" after y+=7 (x^3+7): ");
+        uart_log::write_hex_slice(&y_after_add);
+        uart_log::newline();
+
+        let ret = self.y.sqrt_in_place();
+        let y_after_sqrt = self.y.to_bytes();
+        uart_log::write_str("[set_xo] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" after sqrt: ");
+        uart_log::write_hex_slice(&y_after_sqrt);
+        uart_log::write_str(" ret=");
+        uart_log::write_usize(ret as usize);
+        uart_log::newline();
+
+        self.y.normalize_in_place();
+        let y_after_norm = self.y.to_bytes();
+        uart_log::write_str("[set_xo] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" after normalize: ");
+        uart_log::write_hex_slice(&y_after_norm);
+        uart_log::newline();
+
+        let is_odd = self.y.is_odd();
+        uart_log::write_str("[set_xo] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" y.is_odd=");
+        uart_log::write_usize(is_odd as usize);
+        uart_log::write_str(" y_is_odd=");
+        uart_log::write_usize(y_is_odd as usize);
+        uart_log::newline();
+
+        if is_odd != y_is_odd {
+            self.y.negate_in_place(1);
+            let y_after_neg = self.y.to_bytes();
+            uart_log::write_str("[set_xo] TX#");
+            uart_log::write_usize(tx_num);
+            uart_log::write_str(" after negate: ");
+            uart_log::write_hex_slice(&y_after_neg);
+            uart_log::newline();
+        }
+
+        // Use volatile copy to prevent RISC-V 64-bit compiler optimization bugs
+        self.x.volatile_copy_from(x);
         self.infinity = false;
 
         ret
@@ -223,17 +424,178 @@ impl Affine {
     }
 
     pub fn to_encoded_point(self, compress: bool) -> EncodedPoint {
-        use crate::k256::elliptic_curve::subtle::ConditionallySelectable;
+        let x_bytes = self.x.to_bytes();
+        let y_bytes = self.y.to_bytes();
 
-        EncodedPoint::conditional_select(
-            &EncodedPoint::from_affine_coordinates(
-                &self.x.to_bytes(),
-                &self.y.to_bytes(),
-                compress,
-            ),
-            &EncodedPoint::identity(),
-            Choice::from(self.is_infinity() as u8),
-        )
+        // Manually construct encoded point bytes using volatile writes to prevent
+        // compiler optimization issues on RISC-V
+        if self.is_infinity() {
+            EncodedPoint::identity()
+        } else if compress {
+            // Compressed format: 0x02/0x03 + 32 bytes x
+            let mut buf = [0u8; 33];
+            let tag = if self.y.is_odd() { 0x03u8 } else { 0x02u8 };
+            unsafe {
+                core::ptr::write_volatile(&mut buf[0], tag);
+                for i in 0..32 {
+                    core::ptr::write_volatile(&mut buf[1 + i], x_bytes[i]);
+                }
+            }
+            EncodedPoint::from_bytes(&buf).expect("valid compressed point")
+        } else {
+            // Uncompressed format: 0x04 + 32 bytes x + 32 bytes y
+            let mut buf = [0u8; 65];
+            unsafe {
+                core::ptr::write_volatile(&mut buf[0], 0x04u8);
+                for i in 0..32 {
+                    core::ptr::write_volatile(&mut buf[1 + i], x_bytes[i]);
+                }
+                for i in 0..32 {
+                    core::ptr::write_volatile(&mut buf[33 + i], y_bytes[i]);
+                }
+            }
+            EncodedPoint::from_bytes(&buf).expect("valid uncompressed point")
+        }
+    }
+
+    /// Writes the uncompressed SEC1-encoded point to the output buffer.
+    /// Uses volatile writes throughout to prevent compiler optimization issues on RISC-V.
+    /// Format: 0x04 || x (32 bytes) || y (32 bytes)
+    /// Writes all zeros if this is the point at infinity.
+    pub fn write_uncompressed_bytes(self, out: &mut [u8; 65]) {
+        if self.is_infinity() {
+            unsafe {
+                for i in 0..65 {
+                    core::ptr::write_volatile(&mut out[i], 0u8);
+                }
+            }
+            return;
+        }
+
+        // Write tag byte with volatile
+        unsafe {
+            core::ptr::write_volatile(&mut out[0], 0x04u8);
+        }
+
+        // Write x and y bytes directly to output buffer
+        // This avoids intermediate local arrays that get corrupted on return
+        // Use split_at_mut to avoid borrow checker issues
+        let (_, rest) = out.split_at_mut(1);
+        let (x_part, y_part) = rest.split_at_mut(32);
+        let x_slice: &mut [u8; 32] = x_part.try_into().unwrap();
+        let y_slice: &mut [u8; 32] = y_part.try_into().unwrap();
+        self.x.write_bytes_to(x_slice);
+        self.y.write_bytes_to(y_slice);
+    }
+
+    /// Writes the uncompressed SEC1-encoded point with extensive logging.
+    /// Used for debugging RISC-V corruption issues.
+    pub fn write_uncompressed_bytes_with_logging(self, out: &mut [u8; 65], tx_num: usize) {
+        uart_log::write_str("[affine] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" write_uncompressed_bytes_with_logging");
+        uart_log::newline();
+
+        uart_log::write_str("[affine] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" is_infinity=");
+        uart_log::write_usize(self.is_infinity() as usize);
+        uart_log::newline();
+
+        if self.is_infinity() {
+            unsafe {
+                for i in 0..65 {
+                    core::ptr::write_volatile(&mut out[i], 0u8);
+                }
+            }
+            uart_log::write_str("[affine] TX#");
+            uart_log::write_usize(tx_num);
+            uart_log::write_str(" wrote zeros (infinity)");
+            uart_log::newline();
+            return;
+        }
+
+        // Log the field element values before conversion
+        let x_bytes_before = self.x.to_bytes();
+        let y_bytes_before = self.y.to_bytes();
+        uart_log::write_str("[affine] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" self.x.to_bytes()=");
+        uart_log::write_hex_slice(&x_bytes_before);
+        uart_log::newline();
+
+        uart_log::write_str("[affine] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" self.y.to_bytes()=");
+        uart_log::write_hex_slice(&y_bytes_before);
+        uart_log::newline();
+
+        // Write tag byte with volatile
+        unsafe {
+            core::ptr::write_volatile(&mut out[0], 0x04u8);
+        }
+
+        uart_log::write_str("[affine] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" wrote tag 0x04");
+        uart_log::newline();
+
+        // Write x and y bytes directly to output buffer
+        let (_, rest) = out.split_at_mut(1);
+        let (x_part, y_part) = rest.split_at_mut(32);
+        let x_slice: &mut [u8; 32] = x_part.try_into().unwrap();
+        let y_slice: &mut [u8; 32] = y_part.try_into().unwrap();
+
+        uart_log::write_str("[affine] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" calling x.write_bytes_to");
+        uart_log::newline();
+
+        self.x.write_bytes_to(x_slice);
+
+        // Log what was written to x
+        uart_log::write_str("[affine] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" x_slice after write=");
+        uart_log::write_hex_slice(x_slice);
+        uart_log::newline();
+
+        uart_log::write_str("[affine] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" calling y.write_bytes_to");
+        uart_log::newline();
+
+        self.y.write_bytes_to(y_slice);
+
+        // Log what was written to y
+        uart_log::write_str("[affine] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" y_slice after write=");
+        uart_log::write_hex_slice(y_slice);
+        uart_log::newline();
+
+        // Final check: read back the entire output buffer
+        uart_log::write_str("[affine] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" final out[0..9]=");
+        uart_log::write_hex_slice(&out[0..9]);
+        uart_log::newline();
+
+        uart_log::write_str("[affine] TX#");
+        uart_log::write_usize(tx_num);
+        uart_log::write_str(" final out[33..41]=");
+        uart_log::write_hex_slice(&out[33..41]);
+        uart_log::newline();
+    }
+
+    /// Returns the uncompressed SEC1-encoded point as raw bytes.
+    /// Uses volatile writes throughout to prevent compiler optimization issues on RISC-V.
+    /// Returns `[u8; 65]` with format: 0x04 || x (32 bytes) || y (32 bytes)
+    /// Returns all zeros if this is the point at infinity.
+    pub fn to_uncompressed_bytes(self) -> [u8; 65] {
+        let mut buf = [0u8; 65];
+        self.write_uncompressed_bytes(&mut buf);
+        buf
     }
 
     pub fn to_bytes(self) -> CompressedPoint {

@@ -1,14 +1,16 @@
 // Representation of big integers using primitives that are friendly for our delegations
 extern crate alloc;
 
-use super::super::{ModExpAdviseParams, MODEXP_ADVISE_QUERY_ID};
+#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "proving"), test))]
+use super::super::{ModExpAdviceParams, MODEXP_ADVICE_QUERY_ID};
 use super::u256::*;
 use alloc::vec::Vec;
 use core::alloc::Allocator;
 use core::fmt::Debug;
 use core::mem::MaybeUninit;
 use crypto::{bigint_op_delegation_raw, bigint_op_delegation_with_carry_bit_raw, BigIntOps};
-use zk_ee::system_io_oracle::IOOracle;
+#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "proving"), test))]
+use zk_ee::oracle::IOOracle;
 
 // There is a small choice to make - either we do exponentiation walking as via LE or BE exponent.
 // If we do LE, then we square the base, and multiply accumulator by it
@@ -25,7 +27,7 @@ impl<A: Allocator + Clone> Debug for BigintRepr<A> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "0x")?;
         for digit in self.u64_digits_ref().iter().rev() {
-            write!(f, "{:016x}", digit)?;
+            write!(f, "{digit:016x}")?;
         }
 
         Ok(())
@@ -149,7 +151,7 @@ impl<A: Allocator + Clone> BigintRepr<A> {
         allocator: A,
     ) -> Self {
         if bytes.is_empty() {
-            let backing = Vec::new_in(allocator);
+            let backing = Vec::with_capacity_in(min_capacity, allocator);
             return Self { backing, digits: 0 };
         }
         let (remainder, digits_bytes) = bytes.as_rchunks::<32>();
@@ -184,9 +186,10 @@ impl<A: Allocator + Clone> BigintRepr<A> {
 
         let capacity_for_scratched_in_reduction =
             core::cmp::max(modulus.digits * 2, modulus.digits + self.digits);
-
+        // quotient
         let mut scratch_0 =
             Self::with_capacity_in(capacity_for_scratched_in_reduction, allocator.clone());
+        // remainder
         let mut scratch_1 =
             Self::with_capacity_in(capacity_for_scratched_in_reduction, allocator.clone());
         let mut scratch_2 =
@@ -220,19 +223,22 @@ impl<A: Allocator + Clone> BigintRepr<A> {
 
         let mut scratch_3 = Self::with_capacity_in(modulus.digits * 2, allocator.clone());
 
+        debug_assert!(base.digits <= modulus.digits);
+
         // we will go BE case to quickly strip leading zeroes
         let mut first_found = false;
         // Exp is BE, so do not need to reverse iterator
         'outer: for &byte in exp.iter() {
             // But here we should go from MSB
             for i in (0..8).rev() {
-                if current.digits == 0 {
-                    // in case if modulus is composite, we can get accumulator
-                    // to be 0, and then we can exit the loop early
-                    break 'outer;
-                }
+                debug_assert!(base.digits <= modulus.digits);
                 let bit = byte & (1 << i) > 0;
                 if first_found {
+                    if current.digits == 0 {
+                        // in case if modulus is composite, we can get accumulator
+                        // to be 0, and then we can exit the loop early. And it's not 0^0 case
+                        break 'outer;
+                    }
                     (current, (scratch_0, scratch_1, scratch_2, scratch_3)) = Self::square_step(
                         current,
                         &modulus,
@@ -247,6 +253,9 @@ impl<A: Allocator + Clone> BigintRepr<A> {
                         advisor,
                     );
                     if bit {
+                        if current.digits == 0 {
+                            break 'outer;
+                        }
                         (current, (scratch_0, scratch_1, scratch_2, scratch_3)) = Self::mul_step(
                             current,
                             &base,
@@ -262,13 +271,13 @@ impl<A: Allocator + Clone> BigintRepr<A> {
                             advisor,
                         );
                     }
-                } else {
-                    if bit {
-                        first_found = true;
-                    }
+                } else if bit {
+                    first_found = true;
                 }
             }
         }
+
+        debug_assert!(base.digits <= modulus.digits);
 
         if first_found {
             // at the very end we assert full reduction
@@ -301,7 +310,7 @@ impl<A: Allocator + Clone> BigintRepr<A> {
         digit_carry_propagation_scratch: &mut DelegatedU256,
         advisor: &mut impl ModexpAdvisor,
     ) -> (Self, (Self, Self, Self)) {
-        advisor.get_reduction_op_advise(&current, modulus, &mut scratch_0, &mut scratch_1);
+        advisor.get_reduction_op_advice(&current, modulus, &mut scratch_0, &mut scratch_1);
         // now we should enforce everything backwards
         assert!(scratch_1.digits <= modulus.digits);
 
@@ -348,8 +357,8 @@ impl<A: Allocator + Clone> BigintRepr<A> {
         advisor: &mut impl ModexpAdvisor,
     ) -> (Self, (Self, Self, Self, Self)) {
         assert!(current.digits > 0); // case if it is 0 is handled by outer loop
-        debug_assert_eq!(other.digits, modulus.digits); // we multiply accumulator by base, and base if fully reduced
-        assert!(scratch_0.capacity() >= modulus.digits + 1);
+        debug_assert!(other.digits <= modulus.digits); // we multiply accumulator by base, and base if fully reduced
+        assert!(scratch_0.capacity() > modulus.digits);
         assert!(scratch_1.capacity() >= modulus.digits);
         assert!(scratch_2.capacity() >= modulus.digits * 2);
         assert!(scratch_3.capacity() >= modulus.digits * 2);
@@ -367,9 +376,17 @@ impl<A: Allocator + Clone> BigintRepr<A> {
                 digit_carry_propagation_scratch,
                 current.digits + other.digits,
             );
-            advisor.get_reduction_op_advise(&scratch_2, modulus, &mut scratch_0, &mut scratch_1);
+            advisor.get_reduction_op_advice(&scratch_2, modulus, &mut scratch_0, &mut scratch_1);
             // now we should enforce everything backwards
-            assert!(scratch_0.digits <= scratch_2.digits + 1 - modulus.digits);
+            let max_q = if scratch_2.digits < modulus.digits {
+                0
+            } else if scratch_2.digits == modulus.digits {
+                1
+            } else {
+                scratch_2.digits + 1 - modulus.digits
+            };
+            assert!(scratch_0.digits <= max_q);
+
             assert!(scratch_1.digits <= modulus.digits);
 
             Self::fma(
@@ -410,7 +427,7 @@ impl<A: Allocator + Clone> BigintRepr<A> {
         advisor: &mut impl ModexpAdvisor,
     ) -> (Self, (Self, Self, Self, Self)) {
         assert!(a.digits > 0); // case if it is 0 is handled by outer loop
-        assert!(scratch_0.capacity() >= modulus.digits + 1);
+        assert!(scratch_0.capacity() > modulus.digits);
         assert!(scratch_1.capacity() >= modulus.digits);
         assert!(scratch_2.capacity() >= modulus.digits * 2);
         assert!(scratch_3.capacity() >= modulus.digits * 2);
@@ -428,9 +445,16 @@ impl<A: Allocator + Clone> BigintRepr<A> {
                 digit_carry_propagation_scratch,
                 a.digits * 2,
             );
-            advisor.get_reduction_op_advise(&scratch_2, modulus, &mut scratch_0, &mut scratch_1);
+            advisor.get_reduction_op_advice(&scratch_2, modulus, &mut scratch_0, &mut scratch_1);
             // now we should enforce everything backwards
-            assert!(scratch_0.digits <= scratch_2.digits + 1 - modulus.digits);
+            let max_q = if scratch_2.digits < modulus.digits {
+                0
+            } else if scratch_2.digits == modulus.digits {
+                1
+            } else {
+                scratch_2.digits + 1 - modulus.digits
+            };
+            assert!(scratch_0.digits <= max_q);
             assert!(scratch_1.digits <= modulus.digits);
 
             Self::fma(
@@ -526,6 +550,7 @@ impl<A: Allocator + Clone> BigintRepr<A> {
         let mut next_to_init_digit = 0;
         if let Some(c) = c {
             // first write down c
+            #[allow(clippy::needless_range_loop)]
             for c_digit_idx in 0..c.digits {
                 write_into_ptr_unchecked(
                     dst_scratch_capacity[c_digit_idx].as_mut_ptr(),
@@ -589,9 +614,7 @@ impl<A: Allocator + Clone> BigintRepr<A> {
                     }
 
                     // and renumerate - high is our new carry propagation
-                    let t = carry_scratch;
-                    carry_scratch = scratch_high;
-                    scratch_high = t;
+                    core::mem::swap(&mut carry_scratch, &mut scratch_high);
                 } else {
                     // double-width a * b
 
@@ -637,9 +660,7 @@ impl<A: Allocator + Clone> BigintRepr<A> {
                     }
 
                     // and renumerate
-                    let t = carry_scratch;
-                    carry_scratch = scratch_high;
-                    scratch_high = t;
+                    core::mem::swap(&mut carry_scratch, &mut scratch_high);
                 }
             }
             if a.digits > 0 {
@@ -648,6 +669,7 @@ impl<A: Allocator + Clone> BigintRepr<A> {
                 if dst_digit >= max_product_digits {
                     // abort propagation - we apriori expect that in well-formed case
                     // those digits can not exist
+                    debug_assert!((*carry_scratch).is_zero());
                 } else {
                     assert!(next_to_init_digit >= dst_digit);
                     if dst_digit == next_to_init_digit {
@@ -658,12 +680,38 @@ impl<A: Allocator + Clone> BigintRepr<A> {
                         );
                         next_to_init_digit = dst_digit + 1;
                     } else {
-                        let of = bigint_op_delegation_raw(
+                        let mut of = bigint_op_delegation_raw(
                             dst_scratch_capacity[dst_digit].as_mut_ptr().cast(),
                             carry_scratch.cast(),
                             BigIntOps::Add,
                         );
-                        assert_eq!(of, 0);
+
+                        let mut current_digit = dst_digit;
+                        while of > 0 {
+                            current_digit += 1;
+                            if current_digit >= max_product_digits {
+                                debug_assert!(of == 0);
+                                break;
+                            }
+
+                            carry_propagation_scratch.as_limbs_mut()[0] = of as u64;
+
+                            if current_digit == next_to_init_digit {
+                                let _ = bigint_op_delegation_raw(
+                                    dst_scratch_capacity[current_digit].as_mut_ptr().cast(),
+                                    (carry_propagation_scratch as *const DelegatedU256).cast(),
+                                    BigIntOps::MemCpy,
+                                );
+                                next_to_init_digit = current_digit + 1;
+                                break;
+                            } else {
+                                of = bigint_op_delegation_raw(
+                                    dst_scratch_capacity[current_digit].as_mut_ptr().cast(),
+                                    (carry_propagation_scratch as *const DelegatedU256).cast(),
+                                    BigIntOps::Add,
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -675,12 +723,17 @@ impl<A: Allocator + Clone> BigintRepr<A> {
 
     pub fn to_big_endian<B: Allocator>(&self, allocator: B) -> Vec<u8, B> {
         let mut result = Vec::with_capacity_in(self.digits * 32, allocator);
+        let mut found_non_zero = false;
         for digit in self.digits_ref().iter().rev() {
-            if digit.is_zero() {
-                continue;
+            if digit.is_zero() == false {
+                found_non_zero = true;
             }
-            let be_bytes = digit.to_be_bytes();
-            result.extend(be_bytes);
+
+            // Skip zeroed suffix if any
+            if found_non_zero {
+                let be_bytes = digit.to_be_bytes();
+                result.extend(be_bytes);
+            }
         }
 
         result
@@ -689,7 +742,7 @@ impl<A: Allocator + Clone> BigintRepr<A> {
 
 pub(crate) trait ModexpAdvisor {
     // get advice for let (q,r) = div_rem(a, m)
-    fn get_reduction_op_advise<A: Allocator + Clone>(
+    fn get_reduction_op_advice<A: Allocator + Clone>(
         &mut self,
         a: &BigintRepr<A>,
         m: &BigintRepr<A>,
@@ -698,7 +751,7 @@ pub(crate) trait ModexpAdvisor {
     );
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub(crate) mod naive_advisor {
     use std::alloc::Global;
 
@@ -736,7 +789,7 @@ pub(crate) mod naive_advisor {
     pub(crate) struct NaiveAdvisor;
 
     impl ModexpAdvisor for NaiveAdvisor {
-        fn get_reduction_op_advise<A: Allocator + Clone>(
+        fn get_reduction_op_advice<A: Allocator + Clone>(
             &mut self,
             a: &BigintRepr<A>,
             m: &BigintRepr<A>,
@@ -759,47 +812,95 @@ pub(crate) mod naive_advisor {
     }
 }
 
+#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "proving"), test))]
 pub(crate) struct OracleAdvisor<'a, O: IOOracle> {
     pub(crate) inner: &'a mut O,
 }
 
+#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "proving"), test))]
 fn write_bigint(
     it: &mut impl ExactSizeIterator<Item = usize>,
-    mut to_consume: usize,
+    to_consume: usize,
     dst: &mut BigintRepr<impl Allocator + Clone>,
 ) {
-    const {
-        assert!(core::mem::size_of::<usize>() == core::mem::size_of::<u32>());
-    }
+    // NOTE: even if oracle overstates the number of digits (so - iterator length), it is not important
+    // as long as caller checks that number of digits is within bounds of soundness
+    //
+    // On 64-bit systems, each it.next() returns a u64 (containing two u32 words).
+    // The to_consume count is in u32 words, so we need to adjust.
     unsafe {
         let num_digits = to_consume.next_multiple_of(8) / 8;
         let dst_capacity = dst.clear_as_capacity_mut();
-        for dst in dst_capacity[..num_digits].iter_mut() {
-            let dst: *mut u32 = dst.as_mut_ptr().cast::<[u32; 8]>().cast();
-            for i in 0..8 {
-                if to_consume > 0 {
-                    to_consume -= 1;
-                    let digit = it.next().unwrap();
-                    dst.add(i).write(digit as u32);
-                } else {
-                    dst.add(i).write(0);
+
+        #[cfg(target_pointer_width = "32")]
+        {
+            let mut remaining = to_consume;
+            for dst in dst_capacity[..num_digits].iter_mut() {
+                let dst: *mut u32 = dst.as_mut_ptr().cast::<[u32; 8]>().cast();
+                for i in 0..8 {
+                    if remaining > 0 {
+                        remaining -= 1;
+                        let digit = it.next().unwrap();
+                        dst.add(i).write(digit as u32);
+                    } else {
+                        dst.add(i).write(0);
+                    }
                 }
             }
+            assert_eq!(remaining, 0);
         }
-        assert_eq!(to_consume, 0);
+
+        #[cfg(target_pointer_width = "64")]
+        {
+            // Each it.next() gives a u64 = 2 u32 words.
+            // Process pairs of u32 words at a time.
+            let mut remaining = to_consume;
+            for dst in dst_capacity[..num_digits].iter_mut() {
+                let dst: *mut u32 = dst.as_mut_ptr().cast::<[u32; 8]>().cast();
+                let mut i = 0;
+                while i < 8 {
+                    if remaining >= 2 {
+                        // Read one u64 = two u32 words
+                        let value = it.next().unwrap();
+                        dst.add(i).write(value as u32);          // low word
+                        dst.add(i + 1).write((value >> 32) as u32);  // high word
+                        remaining -= 2;
+                        i += 2;
+                    } else if remaining == 1 {
+                        // Odd number of u32s: read one u64 but only use low word
+                        let value = it.next().unwrap();
+                        dst.add(i).write(value as u32);
+                        remaining -= 1;
+                        i += 1;
+                        // Fill rest with zeros
+                        while i < 8 {
+                            dst.add(i).write(0);
+                            i += 1;
+                        }
+                    } else {
+                        // remaining == 0, fill with zeros
+                        dst.add(i).write(0);
+                        i += 1;
+                    }
+                }
+            }
+            assert_eq!(remaining, 0);
+        }
+
         dst.set_num_digits(num_digits);
     }
 }
 
+#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "proving"), test))]
 impl<'a, O: IOOracle> ModexpAdvisor for OracleAdvisor<'a, O> {
-    fn get_reduction_op_advise<A: Allocator + Clone>(
+    fn get_reduction_op_advice<A: Allocator + Clone>(
         &mut self,
         a: &BigintRepr<A>,
         m: &BigintRepr<A>,
         quotient_dst: &mut BigintRepr<A>,
         remainder_dst: &mut BigintRepr<A>,
     ) {
-        let arg: ModExpAdviseParams = {
+        let arg: ModExpAdviceParams = {
             let a_len = a.digits;
             let a_ptr = a.backing.as_ptr();
 
@@ -808,7 +909,7 @@ impl<'a, O: IOOracle> ModexpAdvisor for OracleAdvisor<'a, O> {
 
             assert!(modulus_len > 0);
 
-            let arg = ModExpAdviseParams {
+            ModExpAdviceParams {
                 op: 0,
                 a_ptr: a_ptr.addr() as u32,
                 a_len: a_len as u32,
@@ -816,29 +917,45 @@ impl<'a, O: IOOracle> ModexpAdvisor for OracleAdvisor<'a, O> {
                 b_len: 0,
                 modulus_ptr: modulus_ptr.addr() as u32,
                 modulus_len: modulus_len as u32,
-            };
-
-            arg
+            }
         };
 
         // We assume that oracle's response is well-formed lengths-wise, and we will check value-wise separately
         let mut it = self
             .inner
             .raw_query(
-                MODEXP_ADVISE_QUERY_ID,
-                &((&arg as *const ModExpAdviseParams).addr() as u32),
+                MODEXP_ADVICE_QUERY_ID,
+                &((&arg as *const ModExpAdviceParams).addr() as u32),
             )
             .unwrap();
 
-        let q_len = it.next().expect("quotient length");
-        let r_len = it.next().expect("remainder length");
+        // The oracle packs q_len and r_len into a single u64:
+        // low 32 bits = q_len, high 32 bits = r_len
+        // On 64-bit systems, we need to unpack this from a single usize.
+        // On 32-bit systems, we read two separate u32 values.
+        #[cfg(target_pointer_width = "64")]
+        let (q_len, r_len) = {
+            let packed = it.next().expect("packed lengths");
+            let q_len = (packed & 0xFFFFFFFF) as usize;
+            let r_len = (packed >> 32) as usize;
+            (q_len, r_len)
+        };
+        #[cfg(target_pointer_width = "32")]
+        let (q_len, r_len) = {
+            let q_len = it.next().expect("quotient length");
+            let r_len = it.next().expect("remainder length");
+            (q_len, r_len)
+        };
 
-        let max_quotient_digits = a.digits + 1 - m.digits;
+        let max_quotient_digits = if a.digits < m.digits {
+            0
+        } else if a.digits == m.digits {
+            1
+        } else {
+            a.digits + 1 - m.digits
+        };
+
         let max_remainder_digits = m.digits;
-
-        const {
-            assert!(core::mem::size_of::<usize>() == core::mem::size_of::<u32>());
-        }
 
         // check that hint is "sane" in upper bound
 

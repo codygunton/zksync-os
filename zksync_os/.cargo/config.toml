@@ -1,12 +1,19 @@
 [build]
-target = "riscv32i-unknown-none-elf"
+target = "riscv64im-unknown-none-elf.json"
 rustflags = [
+  "-Awarnings",
   "-C", "target-feature=+m,-unaligned-scalar-mem,+relax",
+  "-C", "link-arg=-Lsrc/lds",
   "-C", "link-arg=-Tmemory.x",
   "-C", "link-arg=-Tlink.x",
   "-C", "link-arg=--save-temps",
   "-C", "force-frame-pointers",
+  "--remap-path-prefix= /=/src",
+  "-C", "link-arg=--build-id=sha1",
+  "-C", "codegen-units=1",
+  "-C", "debuginfo=0",
 ]
 
-
-
+[unstable]
+build-std = ["core", "alloc"]
+build-std-features = ["compiler-builtins-mem"]

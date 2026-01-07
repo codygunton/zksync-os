@@ -75,11 +75,67 @@ impl FieldElement5x52 {
 
     #[inline(always)]
     pub(super) fn from_bytes(bytes: &[u8; 32]) -> Option<Self> {
+        // Use volatile-safe version on RISC-V 64-bit to prevent compiler optimization bugs
+        #[cfg(target_arch = "riscv64")]
+        let val = Self::from_bytes_volatile(bytes);
+        #[cfg(not(target_arch = "riscv64"))]
         let val = Self::from_bytes_unchecked(bytes);
+
         if val.overflow() {
             None
         } else {
             Some(val)
+        }
+    }
+
+    /// Volatile-safe version of from_bytes for RISC-V 64-bit.
+    /// Uses volatile reads to prevent LLVM optimization bugs that corrupt data.
+    #[cfg(target_arch = "riscv64")]
+    #[inline(never)]
+    fn from_bytes_volatile(bytes: &[u8; 32]) -> Self {
+        unsafe {
+            let read = |i: usize| core::ptr::read_volatile(&bytes[i]);
+
+            let w0 = (read(31) as u64)
+                | ((read(30) as u64) << 8)
+                | ((read(29) as u64) << 16)
+                | ((read(28) as u64) << 24)
+                | ((read(27) as u64) << 32)
+                | ((read(26) as u64) << 40)
+                | (((read(25) & 0xFu8) as u64) << 48);
+
+            let w1 = ((read(25) >> 4) as u64)
+                | ((read(24) as u64) << 4)
+                | ((read(23) as u64) << 12)
+                | ((read(22) as u64) << 20)
+                | ((read(21) as u64) << 28)
+                | ((read(20) as u64) << 36)
+                | ((read(19) as u64) << 44);
+
+            let w2 = (read(18) as u64)
+                | ((read(17) as u64) << 8)
+                | ((read(16) as u64) << 16)
+                | ((read(15) as u64) << 24)
+                | ((read(14) as u64) << 32)
+                | ((read(13) as u64) << 40)
+                | (((read(12) & 0xFu8) as u64) << 48);
+
+            let w3 = ((read(12) >> 4) as u64)
+                | ((read(11) as u64) << 4)
+                | ((read(10) as u64) << 12)
+                | ((read(9) as u64) << 20)
+                | ((read(8) as u64) << 28)
+                | ((read(7) as u64) << 36)
+                | ((read(6) as u64) << 44);
+
+            let w4 = (read(5) as u64)
+                | ((read(4) as u64) << 8)
+                | ((read(3) as u64) << 16)
+                | ((read(2) as u64) << 24)
+                | ((read(1) as u64) << 32)
+                | ((read(0) as u64) << 40);
+
+            Self([w0, w1, w2, w3, w4])
         }
     }
 
@@ -101,39 +157,82 @@ impl FieldElement5x52 {
     #[inline(always)]
     pub(super) fn to_bytes(self) -> FieldBytes {
         let mut ret = FieldBytes::default();
-        ret[0] = (self.0[4] >> 40) as u8;
-        ret[1] = (self.0[4] >> 32) as u8;
-        ret[2] = (self.0[4] >> 24) as u8;
-        ret[3] = (self.0[4] >> 16) as u8;
-        ret[4] = (self.0[4] >> 8) as u8;
-        ret[5] = self.0[4] as u8;
-        ret[6] = (self.0[3] >> 44) as u8;
-        ret[7] = (self.0[3] >> 36) as u8;
-        ret[8] = (self.0[3] >> 28) as u8;
-        ret[9] = (self.0[3] >> 20) as u8;
-        ret[10] = (self.0[3] >> 12) as u8;
-        ret[11] = (self.0[3] >> 4) as u8;
-        ret[12] = ((self.0[2] >> 48) as u8 & 0xFu8) | ((self.0[3] as u8 & 0xFu8) << 4);
-        ret[13] = (self.0[2] >> 40) as u8;
-        ret[14] = (self.0[2] >> 32) as u8;
-        ret[15] = (self.0[2] >> 24) as u8;
-        ret[16] = (self.0[2] >> 16) as u8;
-        ret[17] = (self.0[2] >> 8) as u8;
-        ret[18] = self.0[2] as u8;
-        ret[19] = (self.0[1] >> 44) as u8;
-        ret[20] = (self.0[1] >> 36) as u8;
-        ret[21] = (self.0[1] >> 28) as u8;
-        ret[22] = (self.0[1] >> 20) as u8;
-        ret[23] = (self.0[1] >> 12) as u8;
-        ret[24] = (self.0[1] >> 4) as u8;
-        ret[25] = ((self.0[0] >> 48) as u8 & 0xFu8) | ((self.0[1] as u8 & 0xFu8) << 4);
-        ret[26] = (self.0[0] >> 40) as u8;
-        ret[27] = (self.0[0] >> 32) as u8;
-        ret[28] = (self.0[0] >> 24) as u8;
-        ret[29] = (self.0[0] >> 16) as u8;
-        ret[30] = (self.0[0] >> 8) as u8;
-        ret[31] = self.0[0] as u8;
+        // Use volatile writes to prevent compiler optimization issues on riscv64
+        unsafe {
+            core::ptr::write_volatile(&mut ret[0], (self.0[4] >> 40) as u8);
+            core::ptr::write_volatile(&mut ret[1], (self.0[4] >> 32) as u8);
+            core::ptr::write_volatile(&mut ret[2], (self.0[4] >> 24) as u8);
+            core::ptr::write_volatile(&mut ret[3], (self.0[4] >> 16) as u8);
+            core::ptr::write_volatile(&mut ret[4], (self.0[4] >> 8) as u8);
+            core::ptr::write_volatile(&mut ret[5], self.0[4] as u8);
+            core::ptr::write_volatile(&mut ret[6], (self.0[3] >> 44) as u8);
+            core::ptr::write_volatile(&mut ret[7], (self.0[3] >> 36) as u8);
+            core::ptr::write_volatile(&mut ret[8], (self.0[3] >> 28) as u8);
+            core::ptr::write_volatile(&mut ret[9], (self.0[3] >> 20) as u8);
+            core::ptr::write_volatile(&mut ret[10], (self.0[3] >> 12) as u8);
+            core::ptr::write_volatile(&mut ret[11], (self.0[3] >> 4) as u8);
+            core::ptr::write_volatile(&mut ret[12], ((self.0[2] >> 48) as u8 & 0xFu8) | ((self.0[3] as u8 & 0xFu8) << 4));
+            core::ptr::write_volatile(&mut ret[13], (self.0[2] >> 40) as u8);
+            core::ptr::write_volatile(&mut ret[14], (self.0[2] >> 32) as u8);
+            core::ptr::write_volatile(&mut ret[15], (self.0[2] >> 24) as u8);
+            core::ptr::write_volatile(&mut ret[16], (self.0[2] >> 16) as u8);
+            core::ptr::write_volatile(&mut ret[17], (self.0[2] >> 8) as u8);
+            core::ptr::write_volatile(&mut ret[18], self.0[2] as u8);
+            core::ptr::write_volatile(&mut ret[19], (self.0[1] >> 44) as u8);
+            core::ptr::write_volatile(&mut ret[20], (self.0[1] >> 36) as u8);
+            core::ptr::write_volatile(&mut ret[21], (self.0[1] >> 28) as u8);
+            core::ptr::write_volatile(&mut ret[22], (self.0[1] >> 20) as u8);
+            core::ptr::write_volatile(&mut ret[23], (self.0[1] >> 12) as u8);
+            core::ptr::write_volatile(&mut ret[24], (self.0[1] >> 4) as u8);
+            core::ptr::write_volatile(&mut ret[25], ((self.0[0] >> 48) as u8 & 0xFu8) | ((self.0[1] as u8 & 0xFu8) << 4));
+            core::ptr::write_volatile(&mut ret[26], (self.0[0] >> 40) as u8);
+            core::ptr::write_volatile(&mut ret[27], (self.0[0] >> 32) as u8);
+            core::ptr::write_volatile(&mut ret[28], (self.0[0] >> 24) as u8);
+            core::ptr::write_volatile(&mut ret[29], (self.0[0] >> 16) as u8);
+            core::ptr::write_volatile(&mut ret[30], (self.0[0] >> 8) as u8);
+            core::ptr::write_volatile(&mut ret[31], self.0[0] as u8);
+        }
         ret
+    }
+
+    /// Writes the field element bytes directly to the output slice.
+    /// Uses volatile writes to prevent compiler optimization issues on riscv64.
+    #[inline(always)]
+    pub(super) fn write_bytes_to(self, out: &mut [u8; 32]) {
+        unsafe {
+            core::ptr::write_volatile(&mut out[0], (self.0[4] >> 40) as u8);
+            core::ptr::write_volatile(&mut out[1], (self.0[4] >> 32) as u8);
+            core::ptr::write_volatile(&mut out[2], (self.0[4] >> 24) as u8);
+            core::ptr::write_volatile(&mut out[3], (self.0[4] >> 16) as u8);
+            core::ptr::write_volatile(&mut out[4], (self.0[4] >> 8) as u8);
+            core::ptr::write_volatile(&mut out[5], self.0[4] as u8);
+            core::ptr::write_volatile(&mut out[6], (self.0[3] >> 44) as u8);
+            core::ptr::write_volatile(&mut out[7], (self.0[3] >> 36) as u8);
+            core::ptr::write_volatile(&mut out[8], (self.0[3] >> 28) as u8);
+            core::ptr::write_volatile(&mut out[9], (self.0[3] >> 20) as u8);
+            core::ptr::write_volatile(&mut out[10], (self.0[3] >> 12) as u8);
+            core::ptr::write_volatile(&mut out[11], (self.0[3] >> 4) as u8);
+            core::ptr::write_volatile(&mut out[12], ((self.0[2] >> 48) as u8 & 0xFu8) | ((self.0[3] as u8 & 0xFu8) << 4));
+            core::ptr::write_volatile(&mut out[13], (self.0[2] >> 40) as u8);
+            core::ptr::write_volatile(&mut out[14], (self.0[2] >> 32) as u8);
+            core::ptr::write_volatile(&mut out[15], (self.0[2] >> 24) as u8);
+            core::ptr::write_volatile(&mut out[16], (self.0[2] >> 16) as u8);
+            core::ptr::write_volatile(&mut out[17], (self.0[2] >> 8) as u8);
+            core::ptr::write_volatile(&mut out[18], self.0[2] as u8);
+            core::ptr::write_volatile(&mut out[19], (self.0[1] >> 44) as u8);
+            core::ptr::write_volatile(&mut out[20], (self.0[1] >> 36) as u8);
+            core::ptr::write_volatile(&mut out[21], (self.0[1] >> 28) as u8);
+            core::ptr::write_volatile(&mut out[22], (self.0[1] >> 20) as u8);
+            core::ptr::write_volatile(&mut out[23], (self.0[1] >> 12) as u8);
+            core::ptr::write_volatile(&mut out[24], (self.0[1] >> 4) as u8);
+            core::ptr::write_volatile(&mut out[25], ((self.0[0] >> 48) as u8 & 0xFu8) | ((self.0[1] as u8 & 0xFu8) << 4));
+            core::ptr::write_volatile(&mut out[26], (self.0[0] >> 40) as u8);
+            core::ptr::write_volatile(&mut out[27], (self.0[0] >> 32) as u8);
+            core::ptr::write_volatile(&mut out[28], (self.0[0] >> 24) as u8);
+            core::ptr::write_volatile(&mut out[29], (self.0[0] >> 16) as u8);
+            core::ptr::write_volatile(&mut out[30], (self.0[0] >> 8) as u8);
+            core::ptr::write_volatile(&mut out[31], self.0[0] as u8);
+        }
     }
 
     #[inline(always)]
@@ -531,6 +630,8 @@ pub(super) struct FieldStorage5x52([u64; 4]);
 impl FieldStorage5x52 {
     pub(super) const DEFAULT: Self = Self([0; 4]);
 
+    // Native conversion: returns FieldElement5x52 when NOT using bigint_ops delegation
+    #[cfg(not(all(target_arch = "riscv64", feature = "bigint_ops")))]
     #[inline(always)]
     pub(super) const fn to_field_elem(self) -> FieldElement5x52 {
         FieldElement5x52([
@@ -540,6 +641,24 @@ impl FieldStorage5x52 {
             self.0[2] >> 28 | ((self.0[3] << 36) & 0xFFFFFFFFFFFFF),
             self.0[3] >> 16,
         ])
+    }
+
+    // Delegation conversion: returns FieldElement8x32 when using bigint_ops on riscv64
+    // Uses volatile reads to prevent RISC-V LLVM optimization bugs that corrupt data
+    #[cfg(all(target_arch = "riscv64", feature = "bigint_ops"))]
+    #[inline(never)]
+    pub(super) fn to_field_elem(self) -> crate::secp256k1::field::field_8x32::FieldElement8x32 {
+        // FieldStorage5x52 holds the value as 4 x u64
+        // FieldElement8x32 expects 4 x u64 (BigInt<4>)
+        // Use volatile reads to prevent compiler optimization bugs
+        unsafe {
+            let w0 = core::ptr::read_volatile(&self.0[0]);
+            let w1 = core::ptr::read_volatile(&self.0[1]);
+            let w2 = core::ptr::read_volatile(&self.0[2]);
+            let w3 = core::ptr::read_volatile(&self.0[3]);
+            use crate::ark_ff_delegation::BigInt;
+            crate::secp256k1::field::field_8x32::FieldElement8x32(BigInt([w0, w1, w2, w3]))
+        }
     }
 }
 

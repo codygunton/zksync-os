@@ -10,6 +10,8 @@
 //! - Apply encoded elements.
 //!
 
+// Use MiniDigest instead of Digest to ensure volatile reads are used on RV64
+// See ai_plans/riscv-compiler-bugs.md for details
 use crypto::MiniDigest;
 
 /// Addresses are encoded as 20 bytes
@@ -26,17 +28,6 @@ pub fn estimate_number_encoding_len(value: &[u8]) -> usize {
         .position(|&byte| byte != 0)
         .unwrap_or(value.len());
     estimate_bytes_encoding_len(&value[first_non_zero_byte..])
-}
-
-///
-/// Estimates extra length of encoding length of some payload
-///
-pub const fn estimate_encoding_len_for_payload_length(payload_encoding_len: usize) -> usize {
-    if payload_encoding_len <= 55 {
-        1
-    } else {
-        1 + core::mem::size_of::<usize>() - (payload_encoding_len.leading_zeros() / 8) as usize
-    }
 }
 
 ///

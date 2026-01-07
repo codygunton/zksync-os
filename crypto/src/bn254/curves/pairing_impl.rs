@@ -58,13 +58,35 @@ impl Bn254 {
     ];
 
     /// `exp_loop` taken from arkworks
+    /// Contains volatile workarounds for RV64 compiler bugs
     fn fast_exp_loop_with_naf<I: Iterator<Item = i8>>(f: &mut Fq12, e: I) {
-        let self_inverse = f.cyclotomic_inverse().unwrap();
+        use crate::bn254::fields::fq12::fq12_cyclotomic_inverse_volatile;
+
+        // Volatile refresh helper for Fq12 to prevent compiler misoptimization
+        #[inline(never)]
+        fn vol_refresh_fq12(val: &Fq12) -> Fq12 {
+            let mut fresh = Fq12::default();
+            let src = val as *const _ as *const u64;
+            let dst = &mut fresh as *mut _ as *mut u64;
+            for i in 0..48 {
+                unsafe {
+                    let v = core::ptr::read_volatile(src.add(i));
+                    core::ptr::write_volatile(dst.add(i), v);
+                }
+            }
+            core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+            fresh
+        }
+
+        let self_inverse = fq12_cyclotomic_inverse_volatile(f).unwrap();
+        let self_inverse = vol_refresh_fq12(&self_inverse);
         let mut res = Fq12::one();
         let mut found_nonzero = false;
+
         for value in e {
             if found_nonzero {
                 res.cyclotomic_square_in_place();
+                res = vol_refresh_fq12(&res);
             }
 
             if value != 0 {
@@ -75,9 +97,11 @@ impl Bn254 {
                 } else {
                     res *= &self_inverse;
                 }
+                res = vol_refresh_fq12(&res);
             }
         }
-        *f = res;
+
+        *f = vol_refresh_fq12(&res);
     }
 }
 
@@ -99,6 +123,7 @@ impl Pairing for Bn254 {
         let mut a = a.into_iter();
         let mut b = b.into_iter();
         let mut result = Fq12::one();
+
         loop {
             match (a.next(), b.next()) {
                 (Some(p), Some(q)) => {
@@ -149,6 +174,22 @@ impl Pairing for Bn254 {
     fn final_exponentiation(
         f: ark_ec::pairing::MillerLoopOutput<Self>,
     ) -> Option<PairingOutput<Self>> {
+        // Volatile refresh helper for Fq12 to prevent compiler misoptimization
+        #[inline(never)]
+        fn vol_refresh(val: &Fq12) -> Fq12 {
+            let mut fresh = Fq12::default();
+            let src = val as *const _ as *const u64;
+            let dst = &mut fresh as *mut _ as *mut u64;
+            for i in 0..48 {
+                unsafe {
+                    let v = core::ptr::read_volatile(src.add(i));
+                    core::ptr::write_volatile(dst.add(i), v);
+                }
+            }
+            core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+            fresh
+        }
+
         // Easy part: result = elt^((q^6-1)*(q^2+1)).
         // Follows, e.g., Beuchat et al page 9, by computing result as follows:
         //   elt^((q^6-1)*(q^2+1)) = (conj(elt) * elt^(-1))^(q^2+1)
@@ -158,54 +199,52 @@ impl Pairing for Bn254 {
         let mut f1 = f;
         f1.cyclotomic_inverse_in_place();
 
-        f.inverse().map(|mut f2| {
-            // f2 = f^(-1);
+        // Use custom inverse with volatile workarounds for RV64
+        crate::bn254::fields::fq12::fq12_inverse_volatile(&f).map(|mut f2| {
             // r = f^(p^6 - 1)
-            let mut r = f1 * &f2;
+            let mut r = vol_refresh(&(f1 * &f2));
 
             // f2 = f^(p^6 - 1)
             f2 = r;
             // r = f^((p^6 - 1)(p^2))
             r.frobenius_map_in_place(2);
+            r = vol_refresh(&r);
 
             // r = f^((p^6 - 1)(p^2) + (p^6 - 1))
             // r = f^((p^6 - 1)(p^2 + 1))
             r *= &f2;
+            r = vol_refresh(&r);
 
             // Hard part follows Laura Fuentes-Castaneda et al. "Faster hashing to G2"
-            // by computing:
-            //
-            // result = elt^(q^3 * (12*z^3 + 6z^2 + 4z - 1) +
-            //               q^2 * (12*z^3 + 6z^2 + 6z) +
-            //               q   * (12*z^3 + 6z^2 + 4z) +
-            //               1   * (12*z^3 + 12z^2 + 6z + 1))
-            // which equals
-            //
-            // result = elt^( 2z * ( 6z^2 + 3z + 1 ) * (q^4 - q^2 + 1)/r ).
-
-            let y0 = Self::exp_by_neg_x(r);
-            let y1 = y0.cyclotomic_square();
-            let y2 = y1.cyclotomic_square();
-            let mut y3 = y2 * &y1;
-            let y4 = Self::exp_by_neg_x(y3);
-            let y5 = y4.cyclotomic_square();
-            let mut y6 = Self::exp_by_neg_x(y5);
+            let y0 = vol_refresh(&Self::exp_by_neg_x(r));
+            let y1 = vol_refresh(&y0.cyclotomic_square());
+            let y2 = vol_refresh(&y1.cyclotomic_square());
+            let mut y3 = vol_refresh(&(y2 * &y1));
+            let y4 = vol_refresh(&Self::exp_by_neg_x(y3));
+            let y5 = vol_refresh(&y4.cyclotomic_square());
+            let mut y6 = vol_refresh(&Self::exp_by_neg_x(y5));
             y3.cyclotomic_inverse_in_place();
+            y3 = vol_refresh(&y3);
             y6.cyclotomic_inverse_in_place();
-            let y7 = y6 * &y4;
-            let mut y8 = y7 * &y3;
-            let y9 = y8 * &y1;
-            let y10 = y8 * &y4;
-            let y11 = y10 * &r;
+            y6 = vol_refresh(&y6);
+            let y7 = vol_refresh(&(y6 * &y4));
+            let mut y8 = vol_refresh(&(y7 * &y3));
+            let y9 = vol_refresh(&(y8 * &y1));
+            let y10 = vol_refresh(&(y8 * &y4));
+            let y11 = vol_refresh(&(y10 * &r));
             let mut y12 = y9;
             y12.frobenius_map_in_place(1);
-            let y13 = y12 * &y11;
+            y12 = vol_refresh(&y12);
+            let y13 = vol_refresh(&(y12 * &y11));
             y8.frobenius_map_in_place(2);
-            let y14 = y8 * &y13;
+            y8 = vol_refresh(&y8);
+            let y14 = vol_refresh(&(y8 * &y13));
             r.cyclotomic_inverse_in_place();
-            let mut y15 = r * &y9;
+            r = vol_refresh(&r);
+            let mut y15 = vol_refresh(&(r * &y9));
             y15.frobenius_map_in_place(3);
-            let y16 = y15 * &y14;
+            y15 = vol_refresh(&y15);
+            let y16 = vol_refresh(&(y15 * &y14));
 
             PairingOutput(y16)
         })

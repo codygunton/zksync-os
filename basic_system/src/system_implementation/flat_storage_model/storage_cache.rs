@@ -1,25 +1,509 @@
 //! Storage cache, backed by a history map.
 use crate::system_implementation::flat_storage_model::address_into_special_storage_key;
-use crate::system_implementation::flat_storage_model::AccountAggregateDataHash;
 use alloc::collections::BTreeSet;
+use alloc::fmt::Debug;
 use core::alloc::Allocator;
 use ruint::aliases::B160;
 use storage_models::common_structs::snapshottable_io::SnapshottableIo;
-use storage_models::common_structs::StorageCacheModel;
-use zk_ee::common_structs::{StorageCurrentAppearance, StorageInitialAppearance};
+use storage_models::common_structs::{AccountAggregateDataHash, StorageCacheModel};
+use zk_ee::common_structs::cache_record::{Appearance, CacheRecord};
+use zk_ee::common_structs::history_counter::HistoryCounter;
+use zk_ee::common_structs::history_counter::HistoryCounterSnapshotId;
+use zk_ee::common_traits::key_like_with_bounds::{KeyLikeWithBounds, TyEq};
 use zk_ee::execution_environment_type::ExecutionEnvironmentType;
+use zk_ee::internal_error;
+use zk_ee::oracle::basic_queries::InitialStorageSlotQuery;
+use zk_ee::oracle::IOOracle;
 use zk_ee::system::errors::internal::InternalError;
 use zk_ee::{
     common_structs::{WarmStorageKey, WarmStorageValue},
-    memory::stack_trait::StackCtor,
+    memory::stack_trait::StackFactory,
+    oracle::simple_oracle_query::SimpleOracleQuery,
+    storage_types::StorageAddress,
     system::{errors::system::SystemError, Resources},
-    system_io_oracle::IOOracle,
     types_config::{EthereumIOTypesConfig, SystemIOTypesConfig},
     utils::Bytes32,
 };
 
-use crate::system_implementation::cache_structs::storage_values::*;
+use zk_ee::common_structs::history_map::*;
 use zk_ee::common_structs::ValueDiffCompressionStrategy;
+
+type AddressItem<'a, K, V, A> =
+    HistoryMapItemRefMut<'a, K, CacheRecord<V, StorageElementMetadata>, A>;
+
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+pub struct TransactionId(pub u32);
+
+pub struct StorageSnapshotId {
+    pub cache: CacheSnapshotId,
+    pub evm_refunds_counter: HistoryCounterSnapshotId,
+}
+
+/// EE-specific IO charging.
+pub trait StorageAccessPolicy<R: Resources, V>: 'static + Sized {
+    /// Charge for a warm read (already in cache).
+    fn charge_warm_storage_read(
+        &self,
+        ee_type: ExecutionEnvironmentType,
+        resources: &mut R,
+        is_access_list: bool,
+    ) -> Result<(), SystemError>;
+
+    /// Charge the extra cost of reading a key
+    /// not present in the cache. This cost is added
+    /// to the cost of a warm read.
+    fn charge_cold_storage_read_extra(
+        &self,
+        ee_type: ExecutionEnvironmentType,
+        resources: &mut R,
+        is_new_slot: bool,
+    ) -> Result<(), SystemError>;
+
+    /// Charge the additional cost of performing a write.
+    /// This cost is added to the cost of reading.
+    /// We assume writing is always at least as expensive
+    /// as reading.
+    fn charge_storage_write_extra(
+        &self,
+        ee_type: ExecutionEnvironmentType,
+        initial_value: &V,
+        current_value: &V,
+        new_value: &V,
+        resources: &mut R,
+        is_warm_write: bool,
+        is_new_slot: bool,
+    ) -> Result<(), SystemError>;
+}
+
+#[derive(Default, Clone)]
+pub struct StorageElementMetadata {
+    /// Transaction where this account was last accessed.
+    /// Considered warm if equal to Some(current_tx)
+    pub last_touched_in_tx: Option<TransactionId>,
+}
+
+impl StorageElementMetadata {
+    pub fn considered_warm(&self, current_tx_id: TransactionId) -> bool {
+        self.last_touched_in_tx == Some(current_tx_id)
+    }
+}
+
+pub struct GenericPubdataAwarePlainStorage<
+    K: KeyLikeWithBounds,
+    V,
+    A: Allocator + Clone, // = Global,
+    SF: StackFactory<M>,
+    const M: usize,
+    R: Resources,
+    P: StorageAccessPolicy<R, V>,
+> {
+    pub(crate) cache: HistoryMap<K, CacheRecord<V, StorageElementMetadata>, A>,
+    pub(crate) resources_policy: P,
+    // Note: this doesn't need to be equal to the actual tx number in the block, it just needs to be able to differentiate between transactions.
+    pub(crate) current_tx_id: TransactionId,
+    pub(crate) evm_refunds_counter: HistoryCounter<u32, SF, M, A>, // Used to keep track of EVM gas refunds
+    alloc: A,
+    pub(crate) _marker: core::marker::PhantomData<(R, SF)>,
+}
+
+pub struct IsWarmRead(pub bool);
+
+impl<
+        K: 'static + KeyLikeWithBounds,
+        V: Default
+            + Clone
+            + Debug
+            + PartialEq
+            + From<<EthereumIOTypesConfig as SystemIOTypesConfig>::StorageValue>,
+        A: Allocator + Clone,
+        SF: StackFactory<M>,
+        const M: usize,
+        R: Resources,
+        P: StorageAccessPolicy<R, V>,
+    > GenericPubdataAwarePlainStorage<K, V, A, SF, M, R, P>
+{
+    pub fn new_from_parts(allocator: A, resources_policy: P) -> Self {
+        Self {
+            cache: HistoryMap::new(allocator.clone()),
+            current_tx_id: TransactionId(0),
+            resources_policy,
+            evm_refunds_counter: HistoryCounter::new(allocator.clone()),
+            alloc: allocator.clone(),
+            _marker: core::marker::PhantomData,
+        }
+    }
+
+    pub fn begin_new_tx(&mut self) {
+        self.cache.commit();
+        self.evm_refunds_counter = HistoryCounter::new(self.alloc.clone());
+    }
+
+    pub fn finish_tx(&mut self) {
+        self.current_tx_id.0 += 1;
+    }
+
+    #[track_caller]
+    pub fn start_frame(&mut self) -> StorageSnapshotId {
+        StorageSnapshotId {
+            cache: self.cache.snapshot(),
+            evm_refunds_counter: self.evm_refunds_counter.snapshot(),
+        }
+    }
+
+    #[track_caller]
+    #[must_use]
+    pub fn finish_frame_impl(
+        &mut self,
+        rollback_handle: Option<&StorageSnapshotId>,
+    ) -> Result<(), InternalError> {
+        if let Some(x) = rollback_handle {
+            self.evm_refunds_counter.rollback(x.evm_refunds_counter);
+            self.cache.rollback(x.cache)
+        } else {
+            Ok(())
+        }
+    }
+
+    // RV64 diagnostic helpers
+    #[cfg(target_arch = "riscv64")]
+    fn uart_byte(b: u8) {
+        unsafe { core::ptr::write_volatile(0xa000_0200u64 as *mut u8, b); }
+    }
+    #[cfg(target_arch = "riscv64")]
+    fn uart_str(s: &str) {
+        for b in s.bytes() { Self::uart_byte(b); }
+    }
+    #[cfg(target_arch = "riscv64")]
+    fn uart_hex8(val: u8) {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        Self::uart_byte(HEX[(val >> 4) as usize]);
+        Self::uart_byte(HEX[(val & 0xf) as usize]);
+    }
+    #[cfg(target_arch = "riscv64")]
+    fn uart_hex_bytes(bytes: &[u8], max: usize) {
+        for i in 0..max.min(bytes.len()) { Self::uart_hex8(bytes[i]); }
+    }
+
+    /// Read element and initialize it if needed
+    fn materialize_element<'a>(
+        cache: &'a mut HistoryMap<K, CacheRecord<V, StorageElementMetadata>, A>,
+        resources_policy: &mut P,
+        current_tx_id: TransactionId,
+        ee_type: ExecutionEnvironmentType,
+        resources: &mut R,
+        address: &StorageAddress<EthereumIOTypesConfig>,
+        key: &'a K,
+        oracle: &mut impl IOOracle,
+        is_access_list: bool,
+    ) -> Result<(AddressItem<'a, K, V, A>, IsWarmRead), SystemError> {
+        resources_policy.charge_warm_storage_read(ee_type, resources, is_access_list)?;
+
+        let mut initialized_element = false;
+
+        // RV64 diagnostic: track slot address for logging
+        #[cfg(target_arch = "riscv64")]
+        let slot_addr_bytes = address.address.to_be_bytes::<20>();
+        #[cfg(target_arch = "riscv64")]
+        let slot_key_bytes = address.key.as_u8_ref();
+
+        cache
+            .get_or_insert(key, || {
+                // Element doesn't exist in cache yet, initialize it
+                initialized_element = true;
+
+                let data_from_oracle = InitialStorageSlotQuery::get(oracle, &address)
+                    .map_err(|_| internal_error!("Must get initial slot value from oracle"))?;
+
+                // RV64 diagnostic: Log initial value from oracle
+                #[cfg(target_arch = "riscv64")]
+                {
+                    // Create derived key to check against known missing keys
+                    let dk = zk_ee::common_structs::derive_flat_storage_key(&address.address, &address.key);
+                    let dk_bytes = dk.as_u8_ref();
+                    let is_missing_key =
+                        (dk_bytes[0] == 0x89 && dk_bytes[1] == 0x08 && dk_bytes[2] == 0xe5) ||
+                        (dk_bytes[0] == 0x29 && dk_bytes[1] == 0x22 && dk_bytes[2] == 0xc8) ||
+                        (dk_bytes[0] == 0x3a && dk_bytes[1] == 0x35 && dk_bytes[2] == 0x98) ||
+                        (dk_bytes[0] == 0xdc && dk_bytes[1] == 0xa2 && dk_bytes[2] == 0x5c);
+
+                    if is_missing_key {
+                        Self::uart_str("[INIT] dk=");
+                        Self::uart_hex_bytes(dk_bytes, 8);
+                        Self::uart_str(" val=");
+                        Self::uart_hex_bytes(data_from_oracle.initial_value.as_u8_ref(), 32);
+                        Self::uart_str(" new=");
+                        Self::uart_byte(if data_from_oracle.is_new_storage_slot { b'T' } else { b'F' });
+                        Self::uart_byte(b'\n');
+                    }
+                }
+
+                resources_policy.charge_cold_storage_read_extra(
+                    ee_type,
+                    resources,
+                    data_from_oracle.is_new_storage_slot,
+                )?;
+
+                let appearance = match data_from_oracle.is_new_storage_slot {
+                    true => Appearance::Unset,
+                    false => Appearance::Retrieved,
+                };
+
+                // We need to check that the initial value is default
+                if data_from_oracle.is_new_storage_slot {
+                    assert_eq!(
+                        V::default(),
+                        data_from_oracle.initial_value.into(),
+                        "Initial value of empty slot must be trivial"
+                    );
+                }
+
+                // Note: we initialize it as cold, should be warmed up separately
+                // Since in case of revert it should become cold again and initial record can't be rolled back
+                Ok(CacheRecord::new(
+                    data_from_oracle.initial_value.into(),
+                    appearance,
+                ))
+            })
+            .and_then(|mut x| {
+                // Warm up element according to EVM rules if needed
+                let is_warm_read = x.current().metadata().considered_warm(current_tx_id);
+                if is_warm_read == false {
+                    if initialized_element == false {
+                        let is_new_storage_slot = x.current().appearance() == Appearance::Unset;
+                        // Element exists in cache, but wasn't touched in current tx yet
+                        resources_policy.charge_cold_storage_read_extra(
+                            ee_type,
+                            resources,
+                            is_new_storage_slot,
+                        )?;
+                    }
+
+                    x.update(|cache_record| {
+                        cache_record.update_metadata(|m| {
+                            m.last_touched_in_tx = Some(current_tx_id);
+                            Ok(())
+                        })
+                    })?;
+                }
+
+                Ok((x, IsWarmRead(is_warm_read)))
+            })
+    }
+
+    pub fn apply_read_impl(
+        &mut self,
+        ee_type: ExecutionEnvironmentType,
+        address: &StorageAddress<EthereumIOTypesConfig>,
+        key: &K,
+        resources: &mut R,
+        oracle: &mut impl IOOracle,
+        is_access_list: bool,
+    ) -> Result<V, SystemError>
+where {
+        // RV64 diagnostic: check if this is a read from a missing key
+        #[cfg(target_arch = "riscv64")]
+        {
+            let dk = zk_ee::common_structs::derive_flat_storage_key(&address.address, &address.key);
+            let dk_bytes = dk.as_u8_ref();
+            let is_missing_key =
+                (dk_bytes[0] == 0x89 && dk_bytes[1] == 0x08 && dk_bytes[2] == 0xe5) ||
+                (dk_bytes[0] == 0x29 && dk_bytes[1] == 0x22 && dk_bytes[2] == 0xc8) ||
+                (dk_bytes[0] == 0x3a && dk_bytes[1] == 0x35 && dk_bytes[2] == 0x98) ||
+                (dk_bytes[0] == 0xdc && dk_bytes[1] == 0xa2 && dk_bytes[2] == 0x5c);
+
+            if is_missing_key {
+                Self::uart_str("[READ] dk=");
+                Self::uart_hex_bytes(dk_bytes, 8);
+                Self::uart_str(" addr=");
+                let addr_bytes = address.address.to_be_bytes::<20>();
+                Self::uart_hex_bytes(&addr_bytes, 20);
+                Self::uart_str("\n  slot=");
+                Self::uart_hex_bytes(address.key.as_u8_ref(), 32);
+                Self::uart_byte(b'\n');
+            }
+        }
+
+        let (addr_data, _) = Self::materialize_element(
+            &mut self.cache,
+            &mut self.resources_policy,
+            self.current_tx_id,
+            ee_type,
+            resources,
+            address,
+            key,
+            oracle,
+            is_access_list,
+        )?;
+
+        Ok(addr_data.current().value().clone())
+    }
+
+    pub fn apply_write_impl(
+        &mut self,
+        ee_type: ExecutionEnvironmentType,
+        address: &StorageAddress<EthereumIOTypesConfig>,
+        key: &K,
+        new_value: &V,
+        oracle: &mut impl IOOracle,
+        resources: &mut R,
+    ) -> Result<(V, V), SystemError>
+where {
+        // RV64 diagnostic: check if this is a write to a missing key
+        #[cfg(target_arch = "riscv64")]
+        {
+            let dk = zk_ee::common_structs::derive_flat_storage_key(&address.address, &address.key);
+            let dk_bytes = dk.as_u8_ref();
+            let is_missing_key =
+                (dk_bytes[0] == 0x89 && dk_bytes[1] == 0x08 && dk_bytes[2] == 0xe5) ||
+                (dk_bytes[0] == 0x29 && dk_bytes[1] == 0x22 && dk_bytes[2] == 0xc8) ||
+                (dk_bytes[0] == 0x3a && dk_bytes[1] == 0x35 && dk_bytes[2] == 0x98) ||
+                (dk_bytes[0] == 0xdc && dk_bytes[1] == 0xa2 && dk_bytes[2] == 0x5c);
+
+            if is_missing_key {
+                Self::uart_str("[WRITE_BEGIN] dk=");
+                Self::uart_hex_bytes(dk_bytes, 8);
+                Self::uart_str(" new_val=");
+                // V is Bytes32, use transmute to get bytes
+                let new_val_bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        new_value as *const V as *const u8,
+                        32
+                    )
+                };
+                Self::uart_hex_bytes(new_val_bytes, 32);
+                Self::uart_byte(b'\n');
+            }
+        }
+
+        let (mut addr_data, is_warm_read) = Self::materialize_element(
+            &mut self.cache,
+            &mut self.resources_policy,
+            self.current_tx_id,
+            ee_type,
+            resources,
+            address,
+            key,
+            oracle,
+            false,
+        )?;
+
+        let val_current = addr_data.current().value();
+
+        // RV64 diagnostic: log current and initial values before write
+        #[cfg(target_arch = "riscv64")]
+        {
+            let dk = zk_ee::common_structs::derive_flat_storage_key(&address.address, &address.key);
+            let dk_bytes = dk.as_u8_ref();
+            let is_missing_key =
+                (dk_bytes[0] == 0x89 && dk_bytes[1] == 0x08 && dk_bytes[2] == 0xe5) ||
+                (dk_bytes[0] == 0x29 && dk_bytes[1] == 0x22 && dk_bytes[2] == 0xc8) ||
+                (dk_bytes[0] == 0x3a && dk_bytes[1] == 0x35 && dk_bytes[2] == 0x98) ||
+                (dk_bytes[0] == 0xdc && dk_bytes[1] == 0xa2 && dk_bytes[2] == 0x5c);
+
+            if is_missing_key {
+                Self::uart_str("[WRITE_PRE] curr=");
+                let curr_bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        val_current as *const V as *const u8,
+                        32
+                    )
+                };
+                Self::uart_hex_bytes(curr_bytes, 32);
+                Self::uart_str(" init=");
+                let init_val = addr_data.initial().value();
+                let init_bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        init_val as *const V as *const u8,
+                        32
+                    )
+                };
+                Self::uart_hex_bytes(init_bytes, 32);
+                Self::uart_byte(b'\n');
+            }
+        }
+
+        // Try to get initial value at the beginning of the tx.
+        let val_at_tx_start = addr_data.committed().value().clone();
+
+        self.resources_policy.charge_storage_write_extra(
+            ee_type,
+            &val_at_tx_start,
+            val_current,
+            new_value,
+            resources,
+            is_warm_read.0,
+            addr_data.current().appearance() == Appearance::Unset,
+        )?;
+
+        let old_value = addr_data.current().value().clone();
+        addr_data.update(|cache_record| {
+            cache_record.update(|x, _| {
+                *x = new_value.clone();
+                Ok(())
+            })
+        })?;
+
+        // RV64 diagnostic: log value after write
+        #[cfg(target_arch = "riscv64")]
+        {
+            let dk = zk_ee::common_structs::derive_flat_storage_key(&address.address, &address.key);
+            let dk_bytes = dk.as_u8_ref();
+            let is_missing_key =
+                (dk_bytes[0] == 0x89 && dk_bytes[1] == 0x08 && dk_bytes[2] == 0xe5) ||
+                (dk_bytes[0] == 0x29 && dk_bytes[1] == 0x22 && dk_bytes[2] == 0xc8) ||
+                (dk_bytes[0] == 0x3a && dk_bytes[1] == 0x35 && dk_bytes[2] == 0x98) ||
+                (dk_bytes[0] == 0xdc && dk_bytes[1] == 0xa2 && dk_bytes[2] == 0x5c);
+
+            if is_missing_key {
+                Self::uart_str("[WRITE_POST] curr=");
+                let new_curr = addr_data.current().value();
+                let curr_bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        new_curr as *const V as *const u8,
+                        32
+                    )
+                };
+                Self::uart_hex_bytes(curr_bytes, 32);
+                Self::uart_str(" init=");
+                let init_val = addr_data.initial().value();
+                let init_bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        init_val as *const V as *const u8,
+                        32
+                    )
+                };
+                Self::uart_hex_bytes(init_bytes, 32);
+                Self::uart_byte(b'\n');
+            }
+        }
+
+        Ok((old_value, val_at_tx_start))
+    }
+
+    /// Clear state at specified address
+    pub fn clear_state_impl(&mut self, address: impl AsRef<B160>) -> Result<(), SystemError>
+    where
+        K::Subspace: TyEq<B160>,
+    {
+        use core::ops::Bound::Included;
+        let lower_bound = K::lower_bound(TyEq::rwi(*address.as_ref()));
+        let upper_bound = K::upper_bound(TyEq::rwi(*address.as_ref()));
+        self.cache
+            .for_each_range((Included(&lower_bound), Included(&upper_bound)), |mut x| {
+                x.update(|cache_record| {
+                    cache_record.update(|v, _| {
+                        *v = V::default();
+                        Ok(())
+                    })?;
+                    cache_record.unset();
+                    Ok(())
+                })
+            })?;
+
+        Ok(())
+    }
+}
 
 /// This storage knows concrete definitions where wer store account data hashes, etc
 ///
@@ -31,19 +515,19 @@ pub const ACCOUNT_PROPERTIES_STORAGE_ADDRESS: B160 = B160::from_limbs([0x8003, 0
 
 pub struct NewStorageWithAccountPropertiesUnderHash<
     A: Allocator + Clone,
-    SC: StackCtor<N>,
-    const N: usize,
+    SF: StackFactory<M>,
+    const M: usize,
     R: Resources,
     P: StorageAccessPolicy<R, Bytes32>,
->(pub GenericPubdataAwareStorageValuesCache<WarmStorageKey, Bytes32, A, SC, N, R, P>);
+>(pub GenericPubdataAwarePlainStorage<WarmStorageKey, Bytes32, A, SF, M, R, P>);
 
 impl<
         A: Allocator + Clone,
-        SC: StackCtor<N>,
-        const N: usize,
+        SF: StackFactory<M>,
+        const M: usize,
         R: Resources,
         P: StorageAccessPolicy<R, Bytes32>,
-    > StorageCacheModel for NewStorageWithAccountPropertiesUnderHash<A, SC, N, R, P>
+    > StorageCacheModel for NewStorageWithAccountPropertiesUnderHash<A, SF, M, R, P>
 {
     type IOTypes = EthereumIOTypesConfig;
     type Resources = R;
@@ -56,13 +540,18 @@ impl<
         key: &<Self::IOTypes as SystemIOTypesConfig>::StorageKey,
         oracle: &mut impl IOOracle,
     ) -> Result<<Self::IOTypes as SystemIOTypesConfig>::StorageKey, SystemError> {
+        let sa = StorageAddress {
+            address: *address,
+            key: *key,
+        };
+
         let key = WarmStorageKey {
             address: *address,
             key: *key,
         };
 
         self.0
-            .apply_read_impl(ee_type, &key, resources, oracle, false)
+            .apply_read_impl(ee_type, &sa, &key, resources, oracle, false)
     }
 
     fn touch(
@@ -76,13 +565,18 @@ impl<
     ) -> Result<(), SystemError> {
         // TODO(EVM-1076): use a different low-level function to avoid creating pubdata
         // and merkle proof obligations until we actually read the value
+        let sa = StorageAddress {
+            address: *address,
+            key: *key,
+        };
+
         let key = WarmStorageKey {
             address: *address,
             key: *key,
         };
 
         self.0
-            .apply_read_impl(ee_type, &key, resources, oracle, is_access_list)?;
+            .apply_read_impl(ee_type, &sa, &key, resources, oracle, is_access_list)?;
         Ok(())
     }
 
@@ -94,15 +588,56 @@ impl<
         key: &<Self::IOTypes as SystemIOTypesConfig>::StorageKey,
         new_value: &<Self::IOTypes as SystemIOTypesConfig>::StorageValue,
         oracle: &mut impl IOOracle,
-    ) -> Result<<Self::IOTypes as SystemIOTypesConfig>::StorageKey, SystemError> {
+    ) -> Result<<Self::IOTypes as SystemIOTypesConfig>::StorageValue, SystemError> {
+        let sa = StorageAddress {
+            address: *address,
+            key: *key,
+        };
+
         let key = WarmStorageKey {
             address: *address,
             key: *key,
         };
 
-        let old_value = self
+        #[allow(unused_variables)]
+        let (old_value, val_at_tx_start) = self
             .0
-            .apply_write_impl(ee_type, &key, new_value, oracle, resources)?;
+            .apply_write_impl(ee_type, &sa, &key, new_value, oracle, resources)?;
+
+        if ee_type == ExecutionEnvironmentType::EVM {
+            // EVM specific refunds calculation
+            if old_value != *new_value {
+                let mut gas_refunds = self
+                    .0
+                    .evm_refunds_counter
+                    .value()
+                    .copied()
+                    .unwrap_or_default();
+
+                if old_value == val_at_tx_start {
+                    if !val_at_tx_start.is_zero() && new_value.is_zero() {
+                        gas_refunds += 4800
+                    }
+                } else {
+                    if !val_at_tx_start.is_zero() {
+                        if old_value.is_zero() {
+                            gas_refunds -= 4800
+                        } else if new_value.is_zero() {
+                            gas_refunds += 4800
+                        }
+                    }
+                    if *new_value == val_at_tx_start {
+                        if val_at_tx_start.is_zero() {
+                            gas_refunds += 20000 - 100
+                        } else {
+                            gas_refunds += 5000 - 2100 - 100
+                        }
+                    }
+                }
+
+                self.0.evm_refunds_counter.update(gas_refunds);
+            }
+        }
 
         Ok(old_value)
     }
@@ -123,6 +658,12 @@ impl<
         let key = address_into_special_storage_key(address);
 
         // we just need to create a proper access function
+
+        let sa = StorageAddress {
+            address: ACCOUNT_PROPERTIES_STORAGE_ADDRESS,
+            key,
+        };
+
         let key = WarmStorageKey {
             address: ACCOUNT_PROPERTIES_STORAGE_ADDRESS,
             key,
@@ -130,7 +671,7 @@ impl<
 
         let raw_value = self
             .0
-            .apply_read_impl(ee_type, &key, resources, oracle, false)?;
+            .apply_read_impl(ee_type, &sa, &key, resources, oracle, false)?;
 
         let value = unsafe {
             // we checked TypeId above, so we reinterpret. No drop/forget needed
@@ -156,6 +697,11 @@ impl<
 
         let key = address_into_special_storage_key(address);
 
+        let sa = StorageAddress {
+            address: ACCOUNT_PROPERTIES_STORAGE_ADDRESS,
+            key,
+        };
+
         let key = WarmStorageKey {
             address: ACCOUNT_PROPERTIES_STORAGE_ADDRESS,
             key,
@@ -166,9 +712,9 @@ impl<
             core::ptr::read((new_value as *const T::Value).cast::<Bytes32>())
         };
 
-        let old_value = self
+        let (old_value, _) = self
             .0
-            .apply_write_impl(ee_type, &key, &new_value, oracle, resources)?;
+            .apply_write_impl(ee_type, &sa, &key, &new_value, oracle, resources)?;
 
         let old_value = unsafe {
             // we checked TypeId above, so we reinterpret. No drop/forget needed
@@ -181,16 +727,21 @@ impl<
 
 impl<
         A: Allocator + Clone,
-        SC: StackCtor<N>,
-        const N: usize,
+        SF: StackFactory<M>,
+        const M: usize,
         R: Resources,
         P: StorageAccessPolicy<R, Bytes32>,
-    > SnapshottableIo for NewStorageWithAccountPropertiesUnderHash<A, SC, N, R, P>
+    > SnapshottableIo for NewStorageWithAccountPropertiesUnderHash<A, SF, M, R, P>
 {
     type StateSnapshot = StorageSnapshotId;
 
     fn begin_new_tx(&mut self) {
         self.0.begin_new_tx();
+    }
+
+    fn finish_tx(&mut self) -> Result<(), InternalError> {
+        self.0.finish_tx();
+        Ok(())
     }
 
     fn start_frame(&mut self) -> Self::StateSnapshot {
@@ -207,25 +758,17 @@ impl<
 
 impl<
         A: Allocator + Clone,
-        SC: StackCtor<N>,
-        const N: usize,
+        SF: StackFactory<M>,
+        const M: usize,
         R: Resources,
         P: StorageAccessPolicy<R, Bytes32>,
-    > NewStorageWithAccountPropertiesUnderHash<A, SC, N, R, P>
+    > NewStorageWithAccountPropertiesUnderHash<A, SF, M, R, P>
 {
-    pub(crate) fn iter_as_storage_types(
+    pub fn iter_as_storage_types(
         &self,
-    ) -> impl Iterator<Item = (WarmStorageKey, WarmStorageValue)> + Clone + use<'_, A, SC, N, R, P>
+    ) -> impl Iterator<Item = (WarmStorageKey, WarmStorageValue)> + Clone + use<'_, A, SF, M, R, P>
     {
         self.0.cache.iter().map(|item| {
-            let is_new_storage_slot =
-                item.key_properties().initial_appearance() == StorageInitialAppearance::Empty;
-            let initial_value_used = matches!(
-                item.key_properties().current_appearance(),
-                StorageCurrentAppearance::Observed
-                    | StorageCurrentAppearance::Updated
-                    | StorageCurrentAppearance::Deleted
-            );
             let current_record = item.current();
             let initial_record = item.initial();
             (
@@ -234,9 +777,9 @@ impl<
                 // not actually 'using' it.
                 WarmStorageValue {
                     current_value: *current_record.value(),
-                    is_new_storage_slot,
+                    is_new_storage_slot: initial_record.appearance() == Appearance::Unset,
                     initial_value: *initial_record.value(),
-                    initial_value_used,
+                    initial_value_used: true,
                     ..Default::default()
                 },
             )
@@ -249,7 +792,7 @@ impl<
     ///
     pub fn net_accesses_iter(
         &self,
-    ) -> impl Iterator<Item = (WarmStorageKey, WarmStorageValue)> + Clone + use<'_, A, SC, N, R, P>
+    ) -> impl Iterator<Item = (WarmStorageKey, WarmStorageValue)> + Clone + use<'_, A, SF, M, R, P>
     {
         self.iter_as_storage_types()
     }
@@ -259,7 +802,7 @@ impl<
     ///
     pub fn net_diffs_iter(
         &self,
-    ) -> impl Iterator<Item = (WarmStorageKey, WarmStorageValue)> + use<'_, A, SC, N, R, P> {
+    ) -> impl Iterator<Item = (WarmStorageKey, WarmStorageValue)> + use<'_, A, SF, M, R, P> {
         self.iter_as_storage_types()
             .filter(|(_, v)| v.current_value != v.initial_value)
     }
@@ -286,12 +829,21 @@ impl<
 
             let current_value = element_history.current().value();
             let initial_value = element_history.initial().value();
+            let at_tx_start_value = element_history.committed().value();
 
-            if initial_value != current_value {
+            // If the current value is resetting to the initial one,
+            // we don't consider this diff in the pubdata charging.
+            // This change will be optimized away, so it's actually reducing
+            // pubdata.
+            if current_value == initial_value {
+                continue;
+            }
+
+            if at_tx_start_value != current_value {
                 // TODO(EVM-1074): use tree index instead of key for repeated writes
                 pubdata_used += 32; // key
                 pubdata_used += ValueDiffCompressionStrategy::optimal_compression_length(
-                    initial_value,
+                    at_tx_start_value,
                     current_value,
                 ) as u32;
             }

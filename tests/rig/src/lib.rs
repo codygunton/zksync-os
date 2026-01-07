@@ -1,4 +1,7 @@
+#![allow(incomplete_features)]
+#![feature(generic_const_exprs)]
 #![feature(allocator_api)]
+#![feature(array_chunks)]
 //!
 //! This crate contains infrastructure to write ZKsync OS integration tests.
 //! It contains `Chain` - in memory chain state structure with methods to run blocks, change state
@@ -6,26 +9,37 @@
 //!
 use std::sync::Once;
 pub mod chain;
+pub mod testing_utils;
 pub mod utils;
+
+#[cfg(feature = "zisk-witness")]
+pub mod zisk_bridge;
 
 pub use alloy;
 pub use alloy_rlp;
+pub use alloy_sol_types;
+pub use basic_system;
+pub use callable_oracles;
 pub use chain::BlockContext;
 pub use chain::Chain;
-pub use env_logger;
 pub use ethers;
 pub use forward_system;
 pub use log;
+pub use oracle_provider;
+pub use risc_v_simulator;
 pub use risc_v_simulator::sim::ProfilerConfig;
 pub use ruint;
 pub use zk_ee;
 pub use zksync_os_api;
+pub use zksync_os_interface;
 pub use zksync_web3_rs;
 
 static INIT_LOGGER_ONCE: Once = Once::new();
 pub fn init_logger() {
     INIT_LOGGER_ONCE.call_once(|| {
-        env_logger::try_init().ok();
+        env_logger::Builder::from_default_env()
+            .format_timestamp(None)
+            .init();
     });
 }
 

@@ -1,11 +1,24 @@
 #![cfg_attr(not(feature = "testing"), no_std)]
 #![feature(allocator_api)]
+#![feature(iter_advance_by)]
+#![allow(incomplete_features)]
+#![feature(generic_const_exprs)]
+#![feature(vec_push_within_capacity)]
+#![feature(slice_swap_unchecked)]
 #![feature(ptr_as_ref_unchecked)]
 #![allow(clippy::new_without_default)]
 #![allow(clippy::needless_lifetimes)]
 #![allow(clippy::needless_borrow)]
 #![allow(clippy::needless_borrows_for_generic_args)]
 #![allow(clippy::bool_comparison)]
+#![cfg_attr(
+    any(feature = "error_origins", not(any(target_arch = "riscv32", target_arch = "riscv64"))),
+    allow(clippy::result_large_err)
+)]
+#![cfg_attr(
+    any(feature = "error_origins", not(any(target_arch = "riscv32", target_arch = "riscv64"))),
+    allow(clippy::large_enum_variant)
+)]
 
 extern crate alloc;
 
@@ -20,6 +33,7 @@ use either::Either;
 use errors::EvmSubsystemError;
 use evm_stack::EvmStack;
 use gas::Gas;
+use gas_constants::{SHA3, SHA3WORD};
 use ruint::aliases::U256;
 use zk_ee::execution_environment_type::ExecutionEnvironmentType;
 use zk_ee::memory::slice_vec::SliceVec;
@@ -27,11 +41,12 @@ use zk_ee::system::errors::root_cause::{GetRootCause, RootCause};
 use zk_ee::system::errors::runtime::RuntimeError;
 use zk_ee::system::errors::{internal::InternalError, system::SystemError};
 use zk_ee::system::evm::{EvmFrameInterface, EvmStackInterface};
-use zk_ee::system::{EthereumLikeTypes, Resource, Resources, System, SystemTypes};
+use zk_ee::system::{Ergs, EthereumLikeTypes, Resource, Resources, System, SystemTypes};
 
 use alloc::vec::Vec;
 use zk_ee::utils::*;
 use zk_ee::{internal_error, types_config::*};
+use zksync_os_evm_errors::EvmError;
 
 mod ee_trait_impl;
 pub mod errors;
@@ -53,6 +68,13 @@ pub const DEFAULT_CODE_VERSION_BYTE: u8 = 0u8;
 
 /// Artifacts cached
 pub const ARTIFACTS_CACHING_CODE_VERSION_BYTE: u8 = 1u8;
+
+/// An internal flag used to indicate that EE is waiting for the result of some preemption from OS (call or create request).
+/// Is public for testing purposes.
+pub enum PendingOsRequest<S: SystemTypes> {
+    Call,
+    Create(<S::IOTypes as SystemIOTypesConfig>::Address),
+}
 
 // this is the interpreter that can be found in Reth itself, modified for purposes of having abstract view
 // on memory and resources
@@ -85,55 +107,78 @@ pub struct Interpreter<'a, S: SystemTypes> {
     pub is_static: bool,
     /// Is interpreter call executing construction code.
     pub is_constructor: bool,
+    /// Indicating that EE is waiting for the result of some operation from the OS. `continue_after_preemption` will panic if this is None
+    pub pending_os_request: Option<PendingOsRequest<S>>,
 }
 
-impl<'ee, S: EthereumLikeTypes> EvmFrameInterface<S> for Interpreter<'ee, S> {
+/// Wrapper to provide external access to EVM frame state
+pub struct InterpreterExternal<'ee, S: EthereumLikeTypes> {
+    interpreter: &'ee Interpreter<'ee, S>,
+    #[allow(dead_code)]
+    system: &'ee System<S>,
+}
+
+impl<'ee, S: EthereumLikeTypes> InterpreterExternal<'ee, S> {
+    pub fn new_from(interpreter: &'ee Interpreter<'ee, S>, system: &'ee System<S>) -> Self {
+        Self {
+            interpreter,
+            system,
+        }
+    }
+}
+
+impl<'ee, S: EthereumLikeTypes> EvmFrameInterface<S> for InterpreterExternal<'ee, S> {
     fn instruction_pointer(&self) -> usize {
-        self.instruction_pointer
+        self.interpreter.instruction_pointer
     }
 
     fn resources(&self) -> &<S as SystemTypes>::Resources {
-        &self.gas.resources
+        &self.interpreter.gas.resources
     }
 
     fn stack(&self) -> &impl EvmStackInterface {
-        &self.stack
+        &self.interpreter.stack
     }
 
     fn caller(&self) -> <<S as SystemTypes>::IOTypes as SystemIOTypesConfig>::Address {
-        self.caller
+        self.interpreter.caller
     }
 
     fn address(&self) -> <<S as SystemTypes>::IOTypes as SystemIOTypesConfig>::Address {
-        self.address
+        self.interpreter.address
     }
 
     fn calldata(&self) -> &[u8] {
-        &self.calldata
+        &self.interpreter.calldata
     }
 
     fn return_data(&self) -> &[u8] {
-        &self.returndata
+        &self.interpreter.returndata
     }
 
     fn heap(&self) -> &[u8] {
-        &self.heap
+        &self.interpreter.heap
     }
 
     fn bytecode(&self) -> &[u8] {
-        &self.bytecode
+        &self.interpreter.bytecode
     }
 
     fn call_value(&self) -> &U256 {
-        &self.call_value
+        &self.interpreter.call_value
     }
 
     fn is_static(&self) -> bool {
-        self.is_static
+        self.interpreter.is_static
     }
 
     fn is_constructor(&self) -> bool {
-        self.is_constructor
+        self.interpreter.is_constructor
+    }
+
+    fn refund_counter(&self) -> u32 {
+        use zk_ee::system::IOSubsystem;
+        self.system.io.get_refund_counter()
     }
 }
 
@@ -226,7 +271,7 @@ impl<'a, A: Allocator> BytecodePreprocessingData<'a, A> {
                     SystemError::LeafRuntime(RuntimeError::OutOfErgs(_)) => {
                         SystemError::LeafDefect(internal_error!("OOE when charging only native"))
                     }
-                    e @ SystemError::LeafRuntime(RuntimeError::OutOfNativeResources(_)) => e,
+                    e @ SystemError::LeafRuntime(RuntimeError::FatalRuntimeError(_)) => e,
                 }
             })?;
         Ok(Self::create_artifacts_inner(allocator, deployed_code))
@@ -382,50 +427,26 @@ pub enum ExitCode {
     SelfDestruct = 0x03,
 
     ExternalCall,
-    ConstructionCall,
 
-    // revert code
-    Revert = 0x20, // revert opcode
-    CallTooDeep = 0x21,
-    OutOfFund = 0x22,
-
-    // error codes
-    OutOfGas = 0x50,
-    MemoryOOG = 0x51,
-    MemoryLimitOOG = 0x52,
-    PrecompileOOG = 0x53,
-    InvalidOperandOOG = 0x54,
-    OpcodeNotFound,
-    CallNotAllowedInsideStatic,
-    StateChangeDuringStaticCall,
-    InvalidFEOpcode,
-    InvalidJump,
-    NotActivated,
-    StackUnderflow,
-    StackOverflow,
-    OutOfOffset,
-    CreateCollision,
-    OverflowPayment,
-    PrecompileError,
-    NonceOverflow,
-    /// Create init code size exceeds limit (runtime).
-    CreateContractSizeLimit,
-    /// Error on created contract that begins with EF
-    CreateContractStartingWithEF,
-    /// EIP-3860: Limit and meter initcode. Initcode size limit exceeded.
-    CreateInitcodeSizeLimit,
-
-    // Fatal external error. Returned by database.
-    FatalExternalError,
+    // EVM-defined error
+    EvmError(EvmError),
 
     // Fatal internal error
     FatalError(EvmSubsystemError),
 }
 
+impl From<EvmError> for ExitCode {
+    fn from(e: EvmError) -> Self {
+        Self::EvmError(e)
+    }
+}
+
 impl From<SystemError> for ExitCode {
     fn from(e: SystemError) -> Self {
         match e {
-            SystemError::LeafRuntime(RuntimeError::OutOfErgs(_)) => Self::OutOfGas,
+            SystemError::LeafRuntime(RuntimeError::OutOfErgs(_)) => {
+                Self::EvmError(EvmError::OutOfGas)
+            }
             e => Self::FatalError(e.into()),
         }
     }
@@ -436,7 +457,7 @@ impl From<SystemError> for ExitCode {
 impl From<EvmSubsystemError> for ExitCode {
     fn from(e: EvmSubsystemError) -> Self {
         if let RootCause::Runtime(RuntimeError::OutOfErgs(_)) = e.root_cause() {
-            Self::OutOfGas
+            Self::EvmError(EvmError::OutOfGas)
         } else {
             Self::FatalError(e)
         }
@@ -449,31 +470,23 @@ impl From<InternalError> for ExitCode {
     }
 }
 
-impl ExitCode {
-    fn is_error(&self) -> bool {
-        matches!(
-            self,
-            Self::OutOfGas
-                | Self::MemoryOOG
-                | Self::MemoryLimitOOG
-                | Self::PrecompileOOG
-                | Self::InvalidOperandOOG
-                | Self::OpcodeNotFound
-                | Self::CallNotAllowedInsideStatic
-                | Self::StateChangeDuringStaticCall
-                | Self::InvalidFEOpcode
-                | Self::InvalidJump
-                | Self::NotActivated
-                | Self::StackUnderflow
-                | Self::StackOverflow
-                | Self::OutOfOffset
-                | Self::CreateCollision
-                | Self::OverflowPayment
-                | Self::PrecompileError
-                | Self::NonceOverflow
-                | Self::CreateContractSizeLimit
-                | Self::CreateContractStartingWithEF
-                | Self::CreateInitcodeSizeLimit
-        )
-    }
+///
+/// Charge native and ergs.
+pub fn charge_native_and_ergs<R: Resources>(
+    resources: &mut R,
+    native: u64,
+    ergs: Ergs,
+) -> Result<(), SystemError> {
+    use zk_ee::system::Computational;
+    let to_charge = R::from_ergs_and_native(ergs, R::Native::from_computational(native));
+    resources.charge(&to_charge)
+}
+
+///
+/// Ergs cost for keccak on a given input size.
+///
+pub fn keccak256_ergs_cost(len: usize) -> Ergs {
+    let words = len.div_ceil(32);
+    let gas_cost = SHA3.saturating_add(SHA3WORD.saturating_mul(words as u64));
+    Ergs(gas_cost.saturating_mul(ERGS_PER_GAS))
 }

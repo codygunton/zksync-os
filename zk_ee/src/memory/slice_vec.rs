@@ -1,8 +1,9 @@
 use core::hint::assert_unchecked;
-use core::iter::Extend;
 use core::mem::{ManuallyDrop, MaybeUninit};
 use core::ops::{Deref, DerefMut};
 use core::ptr;
+
+use crate::common_traits::TryExtend;
 
 #[derive(Default)]
 pub struct SliceVec<'a, T> {
@@ -17,6 +18,10 @@ impl<'a, T> SliceVec<'a, T> {
 
     pub fn destruct(self) -> (&'a mut [T], &'a mut [MaybeUninit<T>]) {
         let me = ManuallyDrop::new(self);
+        // WORKAROUND: Compiler fence to ensure volatile writes in try_extend are visible
+        // before the memory is read through the returned slice.
+        // See ai_plans/riscv-compiler-bugs.md for details.
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
         unsafe {
             let memory = core::ptr::read(&me.memory);
             let (initialized, uninitialized) = memory.split_at_mut_unchecked(me.length);
@@ -26,7 +31,11 @@ impl<'a, T> SliceVec<'a, T> {
     }
 
     /// Returns the current contents as a slice and a new empty `SliceVec` that uses the rest of the backing slice.
-    pub fn freeze(&'_ mut self) -> (&'_ mut [T], SliceVec<'_, T>) {
+    pub fn freeze(&mut self) -> (&mut [T], SliceVec<T>) {
+        // WORKAROUND: Compiler fence to ensure volatile writes are visible
+        // before the memory is read through the returned slice.
+        // See ai_plans/riscv-compiler-bugs.md for details.
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
         unsafe {
             let (locked, free) = self.memory.split_at_mut_unchecked(self.length);
             let locked = &mut *(locked as *mut [MaybeUninit<T>] as *mut [T]);
@@ -46,7 +55,11 @@ impl<'a, T> SliceVec<'a, T> {
         self.memory
             .get_mut(self.length)
             .map(|m| {
-                m.write(x);
+                // WORKAROUND: Use volatile write to prevent data corruption on RV64 (ZisK).
+                // See ai_plans/riscv-compiler-bugs.md for details.
+                unsafe {
+                    core::ptr::write_volatile(m.as_mut_ptr(), x);
+                }
                 self.length += 1;
             })
             .ok_or(())
@@ -57,7 +70,10 @@ impl<'a, T> SliceVec<'a, T> {
             None
         } else {
             self.length -= 1;
-            Some(unsafe { self.memory[self.length].assume_init_read() })
+            // WORKAROUND: Compiler fence and volatile read to prevent data corruption on RV64 (ZisK).
+            // See ai_plans/riscv-compiler-bugs.md for details.
+            core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+            Some(unsafe { core::ptr::read_volatile(self.memory[self.length].as_ptr()) })
         }
     }
 
@@ -65,17 +81,11 @@ impl<'a, T> SliceVec<'a, T> {
         if self.length == 0 {
             None
         } else {
+            // WORKAROUND: Compiler fence to ensure volatile writes are visible.
+            // See ai_plans/riscv-compiler-bugs.md for details.
+            core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
             Some(unsafe { self.memory[self.length - 1].assume_init_mut() })
         }
-    }
-
-    #[inline]
-    pub fn extend_from_slice(&mut self, source: &[T])
-    where
-        T: Copy,
-    {
-        self.memory[self.length..][..source.len()].write_copy_of_slice(source);
-        self.length += source.len();
     }
 }
 
@@ -88,8 +98,13 @@ impl<T: Clone> SliceVec<'_, T> {
         }
 
         if new_length > self.length {
+            // Use volatile writes to work around RV64 compiler optimization bugs
+            // See ai_plans/riscv-compiler-bugs.md for details
             for x in &mut self.memory[self.length..new_length] {
-                x.write(padding.clone());
+                unsafe {
+                    let ptr = x.as_mut_ptr();
+                    core::ptr::write_volatile(ptr, padding.clone());
+                }
             }
         }
         if new_length < self.length {
@@ -110,6 +125,10 @@ impl<T: Clone> SliceVec<'_, T> {
 impl<T> Deref for SliceVec<'_, T> {
     type Target = [T];
     fn deref(&self) -> &[T] {
+        // WORKAROUND: Compiler fence to ensure volatile writes are visible
+        // before the memory is read through the returned slice.
+        // See ai_plans/riscv-compiler-bugs.md for details.
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
         unsafe {
             let initialized_part = self.memory.get_unchecked(..self.length);
             &*(initialized_part as *const [MaybeUninit<T>] as *const [T])
@@ -119,6 +138,10 @@ impl<T> Deref for SliceVec<'_, T> {
 
 impl<T> DerefMut for SliceVec<'_, T> {
     fn deref_mut(&mut self) -> &mut [T] {
+        // WORKAROUND: Compiler fence to ensure volatile writes are visible
+        // before the memory is read through the returned slice.
+        // See ai_plans/riscv-compiler-bugs.md for details.
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
         unsafe {
             let initialized_part = self.memory.get_unchecked_mut(..self.length);
             &mut *(initialized_part as *mut [MaybeUninit<T>] as *mut [T])
@@ -126,16 +149,34 @@ impl<T> DerefMut for SliceVec<'_, T> {
     }
 }
 
-impl<T> Extend<T> for SliceVec<'_, T> {
-    fn extend<I>(&mut self, iter: I)
+impl<T> TryExtend<T> for SliceVec<'_, T> {
+    type Error = ();
+
+    fn try_extend<I>(&mut self, iter: I) -> Result<(), Self::Error>
     where
         I: IntoIterator<Item = T>,
     {
-        for (m, x) in self.memory[self.length..].iter_mut().zip(iter) {
-            m.write(x);
-            self.length += 1;
+        let it = iter.into_iter();
+        let cap = self.memory.len();
+        let mut idx = self.length;
+
+        // Fill until either iterator ends or capacity is exhausted
+        // WORKAROUND: Use volatile writes to prevent data corruption on RV64 (ZisK).
+        // See ai_plans/riscv-compiler-bugs.md for details.
+        for item in it {
+            if idx == cap {
+                // Ran out of space, partial write!
+                return Err(());
+            }
+            unsafe {
+                let ptr = self.memory[idx].as_mut_ptr();
+                core::ptr::write_volatile(ptr, item);
+            }
+            idx += 1;
         }
-        // If there is not enough memory left, the whole iterator will not be consumed!
+
+        self.length = idx;
+        Ok(())
     }
 }
 
@@ -154,7 +195,7 @@ mod test {
         let mut memory = [MaybeUninit::uninit(); 10];
         let mut slice_vec = SliceVec::new(&mut memory);
 
-        slice_vec.extend(0..5);
+        slice_vec.try_extend(0..5).unwrap();
         assert_eq!(*slice_vec, [0, 1, 2, 3, 4]);
         slice_vec.resize(3, 0).unwrap();
         assert_eq!(*slice_vec, [0, 1, 2]);
@@ -163,7 +204,7 @@ mod test {
 
         let (slice, mut slice_vec) = slice_vec.freeze();
         assert_eq!(slice, &[0, 1, 2, 0, 0]);
-        slice_vec.extend(5..10);
+        slice_vec.try_extend(5..10).unwrap();
         assert_eq!(*slice_vec, [5, 6, 7, 8, 9]);
         slice_vec.clear();
         assert_eq!(*slice_vec, []);

@@ -7,70 +7,169 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
-use zk_ee::kv_markers::{UsizeDeserializable, UsizeSerializable};
+use std::sync::atomic::{AtomicU64, Ordering};
+use zk_ee::oracle::query_ids::{DISCONNECT_ORACLE_QUERY_ID, UART_QUERY_ID};
+
+/// Thread-local storage for the guest's current program counter.
+/// Simulators should set this before making oracle calls so we can track
+/// which code location triggers each query.
+static CURRENT_GUEST_PC: AtomicU64 = AtomicU64::new(0);
+
+/// Set the current guest PC (called by simulator before oracle operations)
+pub fn set_guest_pc(pc: u64) {
+    CURRENT_GUEST_PC.store(pc, Ordering::Relaxed);
+}
+
+/// Get the current guest PC (called internally when logging queries)
+fn get_guest_pc() -> u64 {
+    CURRENT_GUEST_PC.load(Ordering::Relaxed)
+}
+
+/// Query ID names for logging
+fn query_id_name(id: u32) -> String {
+    match id {
+        UART_QUERY_ID => "UART".to_string(),
+        DISCONNECT_ORACLE_QUERY_ID => "DISCONNECT".to_string(),
+        0x40030000 => "INITIAL_STORAGE_SLOT".to_string(),
+        0x40030001 => "STORAGE_READ".to_string(),
+        0x4002f000 => "FLAT_STORAGE_PREIMAGE".to_string(),
+        0x40040001 => "MERKLE_PATH".to_string(),
+        0x40040002 => "MERKLE_PATH_PUBDATA".to_string(),
+        0x4004f001 => "FLAT_PREVIOUS_INDEX".to_string(),
+        0x4004f002 => "FLAT_EXACT_INDEX".to_string(),
+        0x40070000 => "ZK_PROOF_DATA_INIT".to_string(),
+        0x40070001 => "ZK_PROOF_DATA_INIT_OLD".to_string(),
+        0x40070002 => "PROOF_FOR_INDEX".to_string(),
+        0x40050001 => "TX_DATA".to_string(),
+        0x40050002 => "TX_SIZE".to_string(),
+        0x40060000 => "NEXT_TX_SIZE".to_string(),
+        0x40060001 => "BLOCK_METADATA".to_string(),
+        0x40060002 => "BLOCK_HASHES".to_string(),
+        0x40060003 => "TX_CONTENT".to_string(),
+        id => format!("0x{:08x}", id),
+    }
+}
+
+/// Environment variable to enable verbose query logging
+fn verbose_query_logging() -> bool {
+    std::env::var("VERBOSE_ORACLE").is_ok()
+}
+
+/// Decode a B160 address from usize values (3 usizes = 24 bytes, first 20 are address)
+fn decode_address_from_usizes(data: &[usize]) -> Option<String> {
+    if data.len() < 3 {
+        return None;
+    }
+    // B160 is stored as 3 u64 limbs in little-endian order (lowest limb first)
+    // We need to reconstruct the big-endian address representation
+    let mut bytes = [0u8; 24];
+    // Store in reverse order to get big-endian representation
+    bytes[16..24].copy_from_slice(&data[0].to_be_bytes());
+    bytes[8..16].copy_from_slice(&data[1].to_be_bytes());
+    bytes[0..8].copy_from_slice(&data[2].to_be_bytes());
+    // Take last 20 bytes for the address (skip first 4 bytes of padding)
+    Some(format!("0x{}", hex::encode(&bytes[4..24])))
+}
+
+/// Decode a Bytes32 (storage key or hash) from usize values (4 usizes = 32 bytes)
+fn decode_bytes32_from_usizes(data: &[usize]) -> Option<String> {
+    if data.len() < 4 {
+        return None;
+    }
+    // Bytes32 is stored as 4 u64 limbs in little-endian order (lowest limb first)
+    // We need to reconstruct the big-endian representation
+    let mut bytes = [0u8; 32];
+    bytes[24..32].copy_from_slice(&data[0].to_be_bytes());
+    bytes[16..24].copy_from_slice(&data[1].to_be_bytes());
+    bytes[8..16].copy_from_slice(&data[2].to_be_bytes());
+    bytes[0..8].copy_from_slice(&data[3].to_be_bytes());
+    Some(format!("0x{}", hex::encode(bytes)))
+}
+
+/// Decode a StorageAddress (address + key) from usize values
+fn decode_storage_address(data: &[usize]) -> Option<(String, String)> {
+    if data.len() < 7 {
+        return None;
+    }
+    let address = decode_address_from_usizes(&data[0..3])?;
+    let key = decode_bytes32_from_usizes(&data[3..7])?;
+    Some((address, key))
+}
+use zk_ee::oracle::usize_serialization::{UsizeDeserializable, UsizeSerializable};
 use zk_ee::system::errors::internal::InternalError;
-use zk_ee::{internal_error, system_io_oracle::*};
+use zk_ee::{internal_error, oracle::IOOracle};
 
 pub use risc_v_simulator::abstractions::memory::MemorySource;
 use risc_v_simulator::abstractions::non_determinism::NonDeterminismCSRSource;
 
-pub trait U32Memory {
-    fn read_word(&self, address: u32) -> u32;
-}
-
-impl U32Memory for risc_v_simulator::abstractions::memory::VectorMemoryImpl {
-    fn read_word(&self, address: u32) -> u32 {
-        <Self as risc_v_simulator::abstractions::memory::MemorySource>::get_noexcept(
-            self,
-            address as u64,
-        )
-    }
-}
-
-impl U32Memory for risc_v_simulator::abstractions::memory::VectorMemoryImplWithRom {
-    fn read_word(&self, address: u32) -> u32 {
-        <Self as risc_v_simulator::abstractions::memory::MemorySource>::get_noexcept(
-            self,
-            address as u64,
-        )
-    }
-}
-
-impl<const ROM_BOUND_SECOND_WORD_BITS: usize> U32Memory
-    for riscv_transpiler::vm::RamWithRomRegion<ROM_BOUND_SECOND_WORD_BITS>
-{
-    fn read_word(&self, address: u32) -> u32 {
-        use riscv_transpiler::vm::RamPeek;
-        self.peek_word(address)
-    }
-}
-
 pub struct DummyMemorySource;
 
-impl U32Memory for DummyMemorySource {
-    fn read_word(&self, _address: u32) -> u32 {
+impl MemorySource for DummyMemorySource {
+    fn get(
+        &self,
+        _phys_address: u64,
+        _access_type: risc_v_simulator::abstractions::memory::AccessType,
+        _trap: &mut risc_v_simulator::cycle::status_registers::TrapReason,
+    ) -> u32 {
+        unreachable!()
+    }
+    fn set(
+        &mut self,
+        _phys_address: u64,
+        _value: u32,
+        _access_type: risc_v_simulator::abstractions::memory::AccessType,
+        _trap: &mut risc_v_simulator::cycle::status_registers::TrapReason,
+    ) {
         unreachable!()
     }
 }
 
 ///
-/// Structure that is responsible to buffer incoming queries till the end,
-/// and then dispatch it to various responders. When constructed it checks
+/// Structure that is responsible for buffering incoming queries till the end,
+/// and then dispatching them to various responders. When constructed it checks
 /// that responders do not try to serve the same query ID.
-pub struct ZkEENonDeterminismSource {
+pub struct ZkEENonDeterminismSource<M: MemorySource> {
     query_buffer: Option<QueryBuffer>,
     current_query_id: Option<u32>,
-    current_iterator: Option<Box<dyn ExactSizeIterator<Item = usize> + 'static + Send + Sync>>,
+    current_iterator: Option<Box<dyn ExactSizeIterator<Item = usize> + 'static>>,
     iterator_len_to_indicate: Option<u32>,
     high_half: Option<u32>,
     is_connected_to_external_oracle: bool,
+    /// Flag to ignore the next write(0) from CSRRW side effect after response is complete.
+    /// CSRRW always writes, so after reading the last response value, we get a spurious write(0).
+    ignore_next_zero_write: bool,
     /// Vector of different processors that are responsible for handling queries.
-    processors: Vec<Box<dyn OracleQueryProcessor + 'static + Send + Sync>>,
+    processors: Vec<Box<dyn OracleQueryProcessor<M> + 'static>>,
     /// Mapping from query_id to processor that is handling it (represented as index in processors vector above).
     ranges: BTreeMap<u32, usize>,
+    /// Count of oracle queries made (total).
+    query_count: usize,
+    /// Count of queries by query_id for analysis.
+    query_counts: BTreeMap<u32, usize>,
+    /// Current transaction index (inferred from NEXT_TX_SIZE queries)
+    current_tx_index: usize,
+    /// Detailed query log for debugging
+    query_log: Vec<QueryLogEntry>,
 }
 
-impl Default for ZkEENonDeterminismSource {
+/// Log entry for detailed query analysis
+#[derive(Clone, Debug)]
+pub struct QueryLogEntry {
+    pub query_num: usize,
+    pub tx_index: usize,
+    pub query_id: u32,
+    pub query_name: String,
+    pub input_len: usize,
+    pub response_len: usize,
+    /// First few words of input for context
+    pub input_preview: Vec<usize>,
+    /// First few words of response for context (especially useful for NEXT_TX_SIZE)
+    pub response_preview: Vec<usize>,
+    /// Guest program counter when query was made (0 if not available)
+    pub guest_pc: u64,
+}
+
+impl<M: MemorySource> Default for ZkEENonDeterminismSource<M> {
     fn default() -> Self {
         Self {
             query_buffer: None,
@@ -79,82 +178,278 @@ impl Default for ZkEENonDeterminismSource {
             iterator_len_to_indicate: None,
             high_half: None,
             is_connected_to_external_oracle: false,
+            ignore_next_zero_write: false,
             processors: Vec::new(),
             ranges: BTreeMap::new(),
+            query_count: 0,
+            query_counts: BTreeMap::new(),
+            current_tx_index: 0,
+            query_log: Vec::new(),
         }
     }
 }
 
-impl ZkEENonDeterminismSource {
+impl<M: MemorySource> ZkEENonDeterminismSource<M> {
+    /// Returns the total number of oracle queries made.
+    pub fn query_count(&self) -> usize {
+        self.query_count
+    }
+
+    /// Returns the query counts by query type.
+    pub fn get_query_counts(&self) -> &BTreeMap<u32, usize> {
+        &self.query_counts
+    }
+
+    /// Prints a summary of all oracle queries made.
+    pub fn print_query_summary(&self) {
+        eprintln!("\n[ORACLE] Query breakdown by type:");
+        let mut total = 0usize;
+        let mut non_uart = 0usize;
+        for (qid, count) in &self.query_counts {
+            total += count;
+            if *qid != UART_QUERY_ID {
+                non_uart += count;
+            }
+            eprintln!("  {}: {} queries", query_id_name(*qid), count);
+        }
+        eprintln!("[ORACLE] Total queries: {} (non-UART: {})", total, non_uart);
+        eprintln!("[ORACLE] Transactions processed: {}", self.current_tx_index);
+    }
+
+    /// Returns the detailed query log
+    pub fn get_query_log(&self) -> &[QueryLogEntry] {
+        &self.query_log
+    }
+
+    /// Prints detailed query log (for debugging)
+    pub fn print_detailed_log(&self) {
+        eprintln!("\n[ORACLE] Detailed query log ({} queries):", self.query_log.len());
+        for entry in &self.query_log {
+            eprintln!(
+                "  [{}] tx={} {} input_len={} response_len={} input={:x?}",
+                entry.query_num,
+                entry.tx_index,
+                entry.query_name,
+                entry.input_len,
+                entry.response_len,
+                entry.input_preview
+            );
+        }
+    }
+
+    /// Prints queries grouped by transaction
+    pub fn print_queries_by_tx(&self) {
+        eprintln!("\n[ORACLE] Queries by transaction:");
+        let mut current_tx = 0;
+        let mut tx_queries: BTreeMap<String, usize> = BTreeMap::new();
+
+        for entry in &self.query_log {
+            if entry.tx_index != current_tx {
+                // Print summary for previous tx
+                if !tx_queries.is_empty() {
+                    eprintln!("  TX {}: {:?}", current_tx, tx_queries);
+                }
+                current_tx = entry.tx_index;
+                tx_queries.clear();
+            }
+            *tx_queries.entry(entry.query_name.clone()).or_insert(0) += 1;
+        }
+        // Print last tx
+        if !tx_queries.is_empty() {
+            eprintln!("  TX {}: {:?}", current_tx, tx_queries);
+        }
+    }
+
+    /// Dumps detailed query log to a file for comparison/diffing
+    pub fn dump_query_log_to_file(&self, path: &str) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut file = std::fs::File::create(path)?;
+
+        writeln!(file, "# Oracle Query Log")?;
+        writeln!(file, "# Total queries: {}", self.query_count)?;
+        writeln!(file, "# Transactions: {}", self.current_tx_index)?;
+        writeln!(file, "#")?;
+        writeln!(
+            file,
+            "# Format: query_num,tx_index,query_name,input_len,response_len,input_preview"
+        )?;
+        writeln!(file, "#")?;
+
+        for entry in &self.query_log {
+            writeln!(
+                file,
+                "{},{},{},{},{},{:x?}",
+                entry.query_num,
+                entry.tx_index,
+                entry.query_name,
+                entry.input_len,
+                entry.response_len,
+                entry.input_preview
+            )?;
+        }
+
+        // Also write per-tx summary at the end
+        writeln!(file, "\n# Per-transaction summary:")?;
+        let mut current_tx = 0;
+        let mut tx_queries: BTreeMap<String, usize> = BTreeMap::new();
+
+        for entry in &self.query_log {
+            if entry.tx_index != current_tx {
+                if !tx_queries.is_empty() {
+                    writeln!(file, "# TX {}: {:?}", current_tx, tx_queries)?;
+                }
+                current_tx = entry.tx_index;
+                tx_queries.clear();
+            }
+            *tx_queries.entry(entry.query_name.clone()).or_insert(0) += 1;
+        }
+        if !tx_queries.is_empty() {
+            writeln!(file, "# TX {}: {:?}", current_tx, tx_queries)?;
+        }
+
+        Ok(())
+    }
+
     #[track_caller]
-    pub fn add_external_processor<P: OracleQueryProcessor + 'static + Send + Sync>(
-        &mut self,
-        processor: P,
-    ) {
+    pub fn add_external_processor<P: OracleQueryProcessor<M> + 'static>(&mut self, processor: P) {
         let query_ids = processor.supported_query_ids();
         let processor_id = self.processors.len();
         for id in query_ids.into_iter() {
             let existing = self.ranges.insert(id, processor_id);
-            assert!(
-                existing.is_none(),
-                "more than one processor for query id 0x{id:08x}"
-            );
+            assert!(existing.is_none(), "more than one processor for query id 0x{id:08x}");
         }
         self.processors.push(Box::new(processor));
         self.is_connected_to_external_oracle = true;
     }
 
-    fn process_buffered_query(&mut self, memory: &dyn U32Memory) {
+    fn process_buffered_query(&mut self, memory: &M) {
         assert!(self.current_iterator.is_none());
         assert!(self.current_query_id.is_none());
 
         let buffer = self.query_buffer.take().expect("must exist");
         let query_id = buffer.query_type;
-        // println!("Processing a query with ID = 0x{:08x}", query_id);
+
+        // Track query counts
+        self.query_count += 1;
+        *self.query_counts.entry(query_id).or_insert(0) += 1;
+
+        // Track transaction boundaries (NEXT_TX_SIZE signals start of new tx processing)
+        if query_id == 0x40060000 {
+            // NEXT_TX_SIZE query indicates we're starting to process a new transaction
+            self.current_tx_index += 1;
+        }
+
         if query_id == DISCONNECT_ORACLE_QUERY_ID {
+            // Print query summary on disconnect
+            self.print_query_summary();
+            // Print detailed log if verbose mode
+            if verbose_query_logging() {
+                self.print_queries_by_tx();
+            }
             self.is_connected_to_external_oracle = false;
         } else {
-            let buffer = buffer.buffer;
+            let input_buffer = buffer.buffer;
+            let input_len = input_buffer.len();
+            let input_preview: Vec<usize> = input_buffer.iter().take(4).copied().collect();
+
+            // Log detailed query info for storage queries (always, to help debug divergence)
+            // INITIAL_STORAGE_SLOT = 0x40030000
+            if query_id == 0x40030000 {
+                if let Some((address, key)) = decode_storage_address(&input_buffer) {
+                    eprintln!(
+                        "[oracle] INITIAL_STORAGE_SLOT tx={} address={} key={}",
+                        self.current_tx_index, address, key
+                    );
+                }
+            }
+            // FLAT_STORAGE_PREIMAGE = 0x4002f000
+            if query_id == 0x4002f000 {
+                if let Some(hash) = decode_bytes32_from_usizes(&input_buffer) {
+                    eprintln!(
+                        "[oracle] FLAT_STORAGE_PREIMAGE tx={} hash={}",
+                        self.current_tx_index, hash
+                    );
+                }
+            }
+
             let Some(processor_id) = self.ranges.get(&query_id).copied() else {
                 panic!("Can not process query with ID = 0x{query_id:08x}");
             };
             let processor = &mut self.processors[processor_id];
-            let new_iterator = processor.process_buffered_query(query_id, buffer, memory);
+            let new_iterator = processor.process_buffered_query(query_id, input_buffer, memory);
 
-            // if let Some(new_iterator) = new_iterator {
-            let result_len = new_iterator.len() * 2; // NOTE for mismatch of 32/64-bit archs
+            // Collect iterator to peek at response values, then wrap back as iterator
+            let response_vec: Vec<usize> = new_iterator.collect();
+            let response_preview: Vec<usize> = response_vec.iter().take(4).copied().collect();
+            let result_len = response_vec.len() * 2; // NOTE for mismatch of 32/64-bit archs
+
+            // Log query details
+            let query_name = query_id_name(query_id);
+            let guest_pc = get_guest_pc();
+
+            // Special logging for NEXT_TX_SIZE to show the transaction size
+            if query_id == 0x40060000 && !response_preview.is_empty() {
+                let tx_size = response_preview[0] as u32;
+                eprintln!(
+                    "[oracle] NEXT_TX_SIZE tx={} size={} bytes{}",
+                    self.current_tx_index,
+                    tx_size,
+                    if tx_size == 0 { " (END OF BLOCK)" } else { "" }
+                );
+            }
+
+            // Log query completion (skip UART queries as they're noisy and content is printed by guest)
+
+            //     eprintln!(
+            //         "[oracle] query {} complete, processing... tx={} input_len={} response_len={} (u64s={}) response={:?}",
+            //         query_name, self.current_tx_index, input_len, result_len, response_vec.len(), response_preview
+            //     );
+            // }
+
+            // Store in detailed log
+            self.query_log.push(QueryLogEntry {
+                query_num: self.query_count,
+                tx_index: self.current_tx_index,
+                query_id,
+                query_name: query_name.clone(),
+                input_len,
+                response_len: result_len,
+                input_preview,
+                response_preview,
+                guest_pc,
+            });
+
             self.iterator_len_to_indicate = Some(result_len as u32);
             if result_len > 0 {
                 self.current_query_id = Some(query_id);
-                self.current_iterator = Some(new_iterator);
+                self.current_iterator = Some(Box::new(response_vec.into_iter()));
             }
-            // } else {
-            //     self.iterator_len_to_indicate = Some(0);
-            // }
         }
     }
 
     /// Reads the next 32bits.
     /// Our iterators and queues hold usize elements (u64), so we have to do some splitting and caching.
     fn read_impl(&mut self) -> u32 {
-        // if let Some(query_id) = self.current_query_id {
-        //     println!(
-        //         "Reading from oracle as a part of query ID = 0x{:08x}",
-        //         query_id
-        //     );
-        // }
-
         // We mocked reads, so it's filtered out before
         if self.is_connected_to_external_oracle == false {
             return 0;
         }
 
         if let Some(iterator_len_to_indicate) = self.iterator_len_to_indicate.take() {
+            // If there's no iterator (empty response), set flag to ignore the spurious write(0)
+            if self.current_iterator.is_none() {
+                self.ignore_next_zero_write = true;
+            }
             return iterator_len_to_indicate;
         }
 
-        // This is the 32 bit remaining from the previous item - return them now.
+        // This is the 32 bits remaining from the previous item - return them now.
         if let Some(high) = self.high_half.take() {
+            // If this was the last value (iterator already consumed), set flag to ignore
+            // the spurious write(0) from csrrw that follows this read.
+            if self.current_iterator.is_none() {
+                self.ignore_next_zero_write = true;
+            }
             return high;
         }
         // If we didn't have any partial data left, we should fetch another element from the iterator.
@@ -176,7 +471,30 @@ impl ZkEENonDeterminismSource {
         low
     }
 
-    fn write_impl(&mut self, memory: &dyn U32Memory, value: u32) {
+    fn write_impl(&mut self, memory: &M, value: u32) {
+        // Debug: log writes only when verbose oracle is enabled
+        // if value != 0 && verbose_query_logging() {
+        //     static WRITE_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        //     let count = WRITE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        //     // eprintln!("[ORACLE DEBUG] write #{}: 0x{:08x}", count, value);
+        // }
+
+        // CSRRW instruction always writes to CSR, even when "reading".
+        // When the guest does `csrrw rd, 0x7c0, x0` to read, it also writes x0=0.
+        // We need to ignore these spurious write(0) operations when we're in the
+        // middle of returning a response (indicated by any of these being set).
+        if value == 0
+            && (self.iterator_len_to_indicate.is_some()
+                || self.current_iterator.is_some()
+                || self.high_half.is_some()
+                || self.ignore_next_zero_write)
+        {
+            // Ignore spurious write(0) from csrrw read operation
+            self.ignore_next_zero_write = false;
+            return;
+        }
+        self.ignore_next_zero_write = false;
+
         if self.current_query_id.is_some() {
             println!(
                 "Current query ID = 0x{:08x} iterator is not consumed in full, but received value 0x{:08x}",
@@ -219,7 +537,7 @@ impl ZkEENonDeterminismSource {
     }
 }
 
-impl IOOracle for ZkEENonDeterminismSource {
+impl IOOracle for ZkEENonDeterminismSource<DummyMemorySource> {
     type RawIterator<'a> = Box<dyn ExactSizeIterator<Item = usize> + 'static>;
 
     fn raw_query<'a, I: UsizeSerializable + UsizeDeserializable>(
@@ -234,7 +552,7 @@ impl IOOracle for ZkEENonDeterminismSource {
             return Ok(Box::new([].into_iter()));
         }
         let Some(processor) = self.ranges.get(&query_type).copied() else {
-            return Err(internal_error!("invalid query ID "));
+            return Err(internal_error!("invalid query ID"));
         };
         let processor = &mut self.processors[processor];
         let response = processor.process_buffered_query(
@@ -247,7 +565,7 @@ impl IOOracle for ZkEENonDeterminismSource {
     }
 }
 
-pub trait OracleQueryProcessor {
+pub trait OracleQueryProcessor<M: MemorySource> {
     /// List of different query ids that are supported (for example NextTxSize or BlockLevelMetadataIterator).
     fn supported_query_ids(&self) -> Vec<u32>;
     fn supports_query_id(&self, query_id: u32) -> bool {
@@ -258,8 +576,8 @@ pub trait OracleQueryProcessor {
         &mut self,
         query_id: u32,
         query: Vec<usize>,
-        memory: &dyn U32Memory,
-    ) -> Box<dyn ExactSizeIterator<Item = usize> + 'static + Send + Sync>;
+        memory: &M,
+    ) -> Box<dyn ExactSizeIterator<Item = usize> + 'static>;
 }
 
 struct QueryBuffer {
@@ -271,12 +589,7 @@ struct QueryBuffer {
 
 impl QueryBuffer {
     fn empty_for_query_type(query_type: u32) -> Self {
-        Self {
-            query_type,
-            remaining_len: None,
-            write_low: true,
-            buffer: Vec::new(),
-        }
+        Self { query_type, remaining_len: None, write_low: true, buffer: Vec::new() }
     }
 
     fn write(&mut self, value: u32) -> bool {
@@ -307,11 +620,8 @@ impl QueryBuffer {
     }
 }
 
-// now we hook an access
-impl<M: MemorySource> NonDeterminismCSRSource<M> for ZkEENonDeterminismSource
-where
-    M: U32Memory,
-{
+// Now we hook an access
+impl<M: MemorySource> NonDeterminismCSRSource<M> for ZkEENonDeterminismSource<M> {
     #[allow(clippy::let_and_return)]
     fn read(&mut self) -> u32 {
         let value = self.read_impl();
@@ -325,52 +635,15 @@ where
     }
 }
 
-struct RamPeekProxy<'a, R: riscv_transpiler::vm::RamPeek + ?Sized> {
-    inner: &'a R,
-}
-
-impl<'a, R: riscv_transpiler::vm::RamPeek + ?Sized> U32Memory for RamPeekProxy<'a, R> {
-    fn read_word(&self, address: u32) -> u32 {
-        self.inner.peek_word(address)
-    }
-}
-
-impl riscv_transpiler::vm::NonDeterminismCSRSource for ZkEENonDeterminismSource {
-    #[allow(clippy::let_and_return)]
-    fn read(&mut self) -> u32 {
-        let value = self.read_impl();
-        // println!("`NonDeterminismCSRSource` returned 0x{:08x}", value);
-        value
-    }
-
-    fn write_with_memory_access<R: riscv_transpiler::vm::RamPeek + ?Sized>(
-        &mut self,
-        memory: &R,
-        value: u32,
-    ) {
-        // println!("`NonDeterminismCSRSource` received 0x{:08x}", value);
-        let proxy = RamPeekProxy { inner: memory };
-        self.write_impl(&proxy, value);
-    }
-
-    fn write_with_memory_access_dyn(&mut self, ram: &dyn riscv_transpiler::vm::RamPeek, value: u32) {
-        let proxy = RamPeekProxy { inner: ram };
-        self.write_impl(&proxy, value);
-    }
-}
-
 /// Wraps the original source and remembers all the read accesses.
-pub struct ReadWitnessSource<T: 'static + Send + Sync> {
-    original_source: T,
+pub struct ReadWitnessSource<M: MemorySource> {
+    original_source: ZkEENonDeterminismSource<M>,
     read_items: Rc<RefCell<Vec<u32>>>,
 }
 
-impl<T: 'static + Send + Sync> ReadWitnessSource<T> {
-    pub fn new(original_source: T) -> Self {
-        Self {
-            original_source,
-            read_items: Rc::new(RefCell::new(vec![])),
-        }
+impl<M: MemorySource> ReadWitnessSource<M> {
+    pub fn new(original_source: ZkEENonDeterminismSource<M>) -> Self {
+        Self { original_source, read_items: Rc::new(RefCell::new(vec![])) }
     }
 
     pub fn get_read_items(&self) -> Rc<RefCell<Vec<u32>>> {
@@ -378,50 +651,15 @@ impl<T: 'static + Send + Sync> ReadWitnessSource<T> {
     }
 }
 
-impl<M: MemorySource, T: 'static + Send + Sync + NonDeterminismCSRSource<M>>
-    NonDeterminismCSRSource<M> for ReadWitnessSource<T>
-where
-    M: U32Memory,
-{
+impl<M: MemorySource> NonDeterminismCSRSource<M> for ReadWitnessSource<M> {
     fn read(&mut self) -> u32 {
-        let item = NonDeterminismCSRSource::<M>::read(&mut self.original_source);
-        // on read - remember the items.
+        let item = self.original_source.read();
+        // On read - remember the items.
         self.read_items.borrow_mut().push(item);
         item
     }
 
     fn write_with_memory_access(&mut self, memory: &M, value: u32) {
         self.original_source.write_with_memory_access(memory, value);
-    }
-}
-
-impl<T: 'static + Send + Sync + riscv_transpiler::vm::NonDeterminismCSRSource>
-    riscv_transpiler::vm::NonDeterminismCSRSource for ReadWitnessSource<T>
-{
-    fn read(&mut self) -> u32 {
-        let item = riscv_transpiler::vm::NonDeterminismCSRSource::read(&mut self.original_source);
-        // on read - remember the items.
-        self.read_items.borrow_mut().push(item);
-        item
-    }
-
-    fn write_with_memory_access<R: riscv_transpiler::vm::RamPeek>(
-        &mut self,
-        memory: &R,
-        value: u32,
-    ) {
-        riscv_transpiler::vm::NonDeterminismCSRSource::write_with_memory_access(
-            &mut self.original_source,
-            memory,
-            value,
-        );
-    }
-
-    fn write_with_memory_access_dyn(&mut self, ram: &dyn riscv_transpiler::vm::RamPeek, value: u32) {
-        riscv_transpiler::vm::NonDeterminismCSRSource::write_with_memory_access_dyn(
-            &mut self.original_source,
-            ram,
-            value,
-        );
     }
 }

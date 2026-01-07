@@ -4,6 +4,38 @@ use core::{alloc::Allocator, ptr::NonNull};
 
 pub type HistoryRecordLink<V> = NonNull<HistoryRecord<V>>;
 
+// RV64 UART debugging helpers
+#[cfg(target_arch = "riscv64")]
+mod uart_debug {
+    const UART_ADDR: u64 = 0xa000_0200;
+
+    #[inline(never)]
+    pub fn uart_byte(b: u8) {
+        unsafe { core::ptr::write_volatile(UART_ADDR as *mut u8, b); }
+    }
+
+    #[inline(never)]
+    pub fn uart_str(s: &str) {
+        for b in s.bytes() {
+            uart_byte(b);
+        }
+    }
+
+    #[inline(never)]
+    pub fn uart_hex8(val: u8) {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        uart_byte(HEX[(val >> 4) as usize]);
+        uart_byte(HEX[(val & 0xf) as usize]);
+    }
+
+    #[inline(never)]
+    pub fn uart_hex_bytes(bytes: &[u8], max: usize) {
+        for i in 0..max.min(bytes.len()) {
+            uart_hex8(bytes[i]);
+        }
+    }
+}
+
 /// Record in some element's history
 pub struct HistoryRecord<V> {
     pub touch_ss_id: CacheSnapshotId,

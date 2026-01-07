@@ -123,6 +123,34 @@ impl<'ee, S: EthereumLikeTypes> Interpreter<'ee, S> {
         self.gas.spend_gas_and_native(0, SLOAD_NATIVE_COST)?;
         let stack_head = self.stack.top_mut()?;
         let key = Bytes32::from_u256_be(stack_head);
+
+        // RV64 diagnostic: Log SLOAD for specific contracts (before read)
+        #[cfg(target_arch = "riscv64")]
+        {
+            let addr_bytes = self.address.to_be_bytes::<20>();
+            let is_target =
+                (addr_bytes[0] == 0xa1 && addr_bytes[1] == 0x3b && addr_bytes[2] == 0xaf) ||
+                (addr_bytes[0] == 0x0d && addr_bytes[1] == 0x7e && addr_bytes[2] == 0x90);
+
+            if is_target {
+                // Use inline helpers to avoid method resolution issues
+                const UART_ADDR: u64 = 0xa000_0200;
+                fn ub(b: u8) { unsafe { core::ptr::write_volatile(UART_ADDR as *mut u8, b); } }
+                fn us(s: &str) { for b in s.bytes() { ub(b); } }
+                fn uh8(val: u8) {
+                    const HEX: &[u8; 16] = b"0123456789abcdef";
+                    ub(HEX[(val >> 4) as usize]); ub(HEX[(val & 0xf) as usize]);
+                }
+                fn uhb(bytes: &[u8], max: usize) { for i in 0..max.min(bytes.len()) { uh8(bytes[i]); } }
+
+                us("[SLOAD] addr=");
+                uhb(&addr_bytes, 20);
+                us(" slot=");
+                uhb(key.as_u8_ref(), 32);
+                ub(b'\n');
+            }
+        }
+
         let value = system.io.storage_read::<false>(
             THIS_EE_TYPE,
             self.gas.resources_mut(),
@@ -159,6 +187,26 @@ impl<'ee, S: EthereumLikeTypes> Interpreter<'ee, S> {
         Ok(())
     }
 
+    // RV64 UART helpers for SSTORE logging
+    #[cfg(target_arch = "riscv64")]
+    fn uart_byte(b: u8) {
+        unsafe { core::ptr::write_volatile(0xa000_0200u64 as *mut u8, b); }
+    }
+    #[cfg(target_arch = "riscv64")]
+    fn uart_str(s: &str) {
+        for b in s.bytes() { Self::uart_byte(b); }
+    }
+    #[cfg(target_arch = "riscv64")]
+    fn uart_hex8(val: u8) {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        Self::uart_byte(HEX[(val >> 4) as usize]);
+        Self::uart_byte(HEX[(val & 0xf) as usize]);
+    }
+    #[cfg(target_arch = "riscv64")]
+    fn uart_hex_bytes(bytes: &[u8], max: usize) {
+        for i in 0..max.min(bytes.len()) { Self::uart_hex8(bytes[i]); }
+    }
+
     pub fn sstore(
         &mut self,
         system: &mut System<S>,
@@ -174,6 +222,43 @@ impl<'ee, S: EthereumLikeTypes> Interpreter<'ee, S> {
         let (index, value) = self.stack.pop_2()?;
         let index = Bytes32::from_u256_be(index);
         let value = Bytes32::from_u256_be(value);
+
+        // RV64 diagnostic: Log SSTORE for specific contracts
+        #[cfg(target_arch = "riscv64")]
+        {
+            // Global SSTORE counter
+            static mut SSTORE_COUNT: u32 = 0;
+            unsafe { SSTORE_COUNT += 1; }
+
+            let addr_bytes = self.address.to_be_bytes::<20>();
+            // Check for target contracts:
+            // 0xa13baf47339d63b743e7da8741db5456dac1e556
+            // 0x0d7e906bd9cafa154b048cfa766cc1e54e39af9b
+            let is_target =
+                (addr_bytes[0] == 0xa1 && addr_bytes[1] == 0x3b && addr_bytes[2] == 0xaf) ||
+                (addr_bytes[0] == 0x0d && addr_bytes[1] == 0x7e && addr_bytes[2] == 0x90);
+
+            // Log every 100th SSTORE to see total count without too much noise
+            let count = unsafe { SSTORE_COUNT };
+            if count % 100 == 0 {
+                Self::uart_str("[SSTORE_CNT] ");
+                Self::uart_hex8((count >> 24) as u8);
+                Self::uart_hex8((count >> 16) as u8);
+                Self::uart_hex8((count >> 8) as u8);
+                Self::uart_hex8(count as u8);
+                Self::uart_byte(b'\n');
+            }
+
+            if is_target {
+                Self::uart_str("[SSTORE] addr=");
+                Self::uart_hex_bytes(&addr_bytes, 20);
+                Self::uart_str(" slot=");
+                Self::uart_hex_bytes(index.as_u8_ref(), 32);
+                Self::uart_str(" val=");
+                Self::uart_hex_bytes(value.as_u8_ref(), 32);
+                Self::uart_byte(b'\n');
+            }
+        }
 
         system.io.storage_write::<false>(
             THIS_EE_TYPE,
@@ -394,6 +479,33 @@ impl<'ee, S: EthereumLikeTypes> Interpreter<'ee, S> {
         let (gas_to_pass, to) = self.stack.pop_2()?;
         let to = u256_to_b160(to);
         let gas_to_pass = u256_to_u64_saturated(&gas_to_pass);
+
+        // RV64 diagnostic: Log calls to target contracts
+        #[cfg(target_arch = "riscv64")]
+        {
+            let to_bytes = to.to_be_bytes::<20>();
+            let is_target =
+                (to_bytes[0] == 0xa1 && to_bytes[1] == 0x3b && to_bytes[2] == 0xaf) ||
+                (to_bytes[0] == 0x0d && to_bytes[1] == 0x7e && to_bytes[2] == 0x90);
+
+            if is_target {
+                const UART_ADDR: u64 = 0xa000_0200;
+                fn ub(b: u8) { unsafe { core::ptr::write_volatile(UART_ADDR as *mut u8, b); } }
+                fn us(s: &str) { for b in s.bytes() { ub(b); } }
+                fn uh8(val: u8) {
+                    const HEX: &[u8; 16] = b"0123456789abcdef";
+                    ub(HEX[(val >> 4) as usize]); ub(HEX[(val & 0xf) as usize]);
+                }
+                fn uhb(bytes: &[u8], max: usize) { for i in 0..max.min(bytes.len()) { uh8(bytes[i]); } }
+
+                us("[CALL] to=");
+                uhb(&to_bytes, 20);
+                let from_bytes = self.address.to_be_bytes::<20>();
+                us(" from=");
+                uhb(&from_bytes, 20);
+                ub(b'\n');
+            }
+        }
 
         let value = match scheme {
             CallScheme::CallCode => {

@@ -5,19 +5,24 @@ use cfg_if::cfg_if;
 
 mod invert;
 
-#[cfg(all(target_pointer_width = "64", not(feature = "bigint_ops")))]
+// scalar64: pure Rust 64-bit implementation, used on 64-bit platforms without bigint_ops
+#[cfg(target_pointer_width = "64")]
 mod scalar64;
 
 #[cfg(all(target_pointer_width = "32", not(feature = "bigint_ops")))]
 mod scalar32;
 
-#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+// scalar32_delegation: used on riscv32/riscv64 with bigint_ops
+#[cfg(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    test,
+    all(feature = "proving", fuzzing)
+))]
 pub(crate) mod scalar32_delegation;
-#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
-pub use scalar32_delegation::init;
 
 cfg_if! {
-    if #[cfg(feature = "bigint_ops")] {
+    // Use bigint_ops delegation on riscv32/riscv64
+    if #[cfg(all(feature = "bigint_ops", any(target_arch = "riscv32", target_arch = "riscv64")))] {
         use scalar32_delegation::ScalarInner;
     } else if #[cfg(target_pointer_width = "32")] {
         use scalar32::ScalarInner;
@@ -32,10 +37,12 @@ const ORDER_HEX: &str = "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8
 pub struct Scalar(pub(crate) ScalarInner);
 
 impl Scalar {
+    #[cfg(test)]
     pub(crate) const ZERO: Self = Self(ScalarInner::ZERO);
-    pub const ONE: Self = Self(ScalarInner::ONE);
+    #[cfg(test)]
+    pub(crate) const ONE: Self = Self(ScalarInner::ONE);
+    #[cfg(test)]
     const ORDER: Self = Self(ScalarInner::ORDER);
-
     #[cfg(test)]
     const MINUS_LAMBDA: Self = Self(ScalarInner::MINUS_LAMBDA);
 
@@ -54,22 +61,23 @@ impl Scalar {
         Self(ScalarInner::from_be_hex(hex))
     }
 
-    pub fn from_signature(signature: &crate::k256::ecdsa::Signature) -> (Self, Self) {
+    pub(crate) fn from_signature(signature: &crate::k256::ecdsa::Signature) -> (Self, Self) {
         let (r, s) = signature.split_scalars();
         (Self::from_k256_scalar(*r), Self::from_k256_scalar(*s))
     }
 
-    pub fn to_repr(self) -> FieldBytes {
+    pub(crate) fn to_repr(self) -> FieldBytes {
         self.0.to_be_bytes().into()
     }
 
+    #[cfg(test)]
     pub(crate) fn from_repr(bytes: FieldBytes) -> Self {
         let bytes = bytes.as_slice().try_into().unwrap();
         Self(ScalarInner::from_be_bytes(bytes))
     }
 
     #[inline(always)]
-    pub fn from_k256_scalar(s: crate::k256::Scalar) -> Self {
+    pub(crate) fn from_k256_scalar(s: crate::k256::Scalar) -> Self {
         Self(ScalarInner::from_k256_scalar(s))
     }
 
@@ -91,11 +99,11 @@ impl Scalar {
         self.0.bits_var(offset, count)
     }
 
-    pub fn is_zero(&self) -> bool {
+    pub(crate) fn is_zero(&self) -> bool {
         self.0.is_zero()
     }
 
-    pub fn negate_in_place(&mut self) {
+    pub(crate) fn negate_in_place(&mut self) {
         self.0.negate_in_place();
     }
 }
@@ -151,6 +159,7 @@ impl PartialOrd for Scalar {
     }
 }
 
+#[cfg(test)]
 impl core::ops::Neg for Scalar {
     type Output = Self;
 
@@ -161,6 +170,7 @@ impl core::ops::Neg for Scalar {
     }
 }
 
+#[cfg(test)]
 impl core::ops::Mul for Scalar {
     type Output = Self;
 
@@ -171,6 +181,7 @@ impl core::ops::Mul for Scalar {
     }
 }
 
+#[cfg(test)]
 impl core::ops::Add for Scalar {
     type Output = Self;
 
@@ -181,6 +192,7 @@ impl core::ops::Add for Scalar {
     }
 }
 
+#[cfg(test)]
 impl core::ops::Sub for Scalar {
     type Output = Self;
 
@@ -194,15 +206,8 @@ mod tests {
     use super::Scalar;
     use proptest::{prop_assert, prop_assert_eq, proptest};
 
-    fn init() {
-        #[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
-        super::scalar32_delegation::init();
-    }
-
     #[test]
     fn test_zero() {
-        init();
-
         assert_eq!(Scalar::ZERO, Scalar::ORDER);
         assert!(Scalar::ZERO.is_zero());
         assert!(Scalar::ORDER.is_zero());
@@ -210,8 +215,6 @@ mod tests {
 
     #[test]
     fn test_mul() {
-        init();
-
         proptest!(|(x: Scalar, y: Scalar, z: Scalar)| {
             prop_assert_eq!(x * y, y * x);
             prop_assert_eq!((x * y) * z, x * (y * z));
@@ -224,8 +227,6 @@ mod tests {
 
     #[test]
     fn test_add() {
-        init();
-
         proptest!(|(x: Scalar, y: Scalar, z: Scalar)| {
             prop_assert_eq!(x + y, y + x);
             prop_assert_eq!(x + Scalar::ZERO, x);
@@ -236,13 +237,13 @@ mod tests {
 
     #[test]
     fn test_decompose() {
-        init();
-
         proptest!(|(k: Scalar)| {
             let (mut r1, mut r2) = k.decompose();
             let lambda = -Scalar::MINUS_LAMBDA;
 
-            #[cfg(feature = "bigint_ops")]
+            // scalar32_delegation uses Montgomery representation internally,
+            // so we need to convert to normal representation for comparison
+            #[cfg(all(feature = "bigint_ops", any(target_arch = "riscv32", target_arch = "riscv64")))]
             {
                 r1 = Scalar(r1.0.to_representation());
                 r2 = Scalar(r2.0.to_representation());
@@ -250,7 +251,8 @@ mod tests {
 
             prop_assert_eq!(r1 + r2 * lambda, k);
 
-            #[cfg(feature = "bigint_ops")]
+            // Convert back to integer form for the bound check
+            #[cfg(all(feature = "bigint_ops", any(target_arch = "riscv32", target_arch = "riscv64")))]
             {
                 r1 = Scalar(r1.0.to_integer());
                 r2 = Scalar(r2.0.to_integer());
