@@ -75,6 +75,9 @@ enum Command {
         witness_output_dir: Option<String>,
         #[arg(long)]
         chain_id: Option<u64>,
+        /// Skip RISC-V simulation (faster, bootloader only)
+        #[arg(long)]
+        only_forward: bool,
     },
     // Run a single Ethereum block with Keccak MPT witness
     SingleEthRun {
@@ -83,6 +86,9 @@ enum Command {
         block_dir: String,
         #[arg(long)]
         chain_id: Option<u64>,
+        /// Skip RISC-V witness generation (faster, bootloader only)
+        #[arg(long)]
+        skip_witness: bool,
     },
     // Export block ratios from DB
     ExportRatios {
@@ -198,17 +204,20 @@ fn main() -> anyhow::Result<()> {
             randomized,
             witness_output_dir,
             chain_id,
+            only_forward,
         } => crate::single_run::single_run(
             block_dir,
             block_hashes,
             randomized,
             witness_output_dir,
             chain_id,
+            only_forward,
         ),
         Command::SingleEthRun {
             block_dir,
             chain_id,
-        } => crate::single_run::single_eth_run::<true>(block_dir, chain_id),
+            skip_witness,
+        } => crate::single_run::single_eth_run::<true>(block_dir, chain_id, skip_witness),
         Command::LiveRun {
             start_block,
             end_block,

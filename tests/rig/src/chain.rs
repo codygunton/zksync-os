@@ -267,7 +267,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
         block_context: Option<BlockContext>,
         profiler_config: Option<ProfilerConfig>,
     ) -> BlockOutput {
-        self.run_block_with_extra_stats(transactions, block_context, profiler_config, None, None)
+        self.run_block_with_extra_stats(transactions, block_context, profiler_config, None, None, false)
             .0
     }
 
@@ -278,6 +278,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
         profiler_config: Option<ProfilerConfig>,
         witness_output_file: Option<PathBuf>,
         app: Option<String>,
+        only_forward: bool,
     ) -> (BlockOutput, BlockExtraStats) {
         let block_context = block_context.unwrap_or_default();
         let block_metadata = BlockMetadataFromOracle {
@@ -369,77 +370,79 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
             stats.computational_native_used = Some(native_used);
         }
 
-        if let Some(path) = witness_output_file {
-            let result = Self::run_batch_generate_witness::<false>(oracle, &app);
-            let mut file = File::create(&path).expect("should create file");
-            let witness: Vec<u8> = result.iter().flat_map(|x| x.to_be_bytes()).collect();
-            let hex = hex::encode(witness);
-            file.write_all(hex.as_bytes())
-                .expect("should write to file");
-        } else {
-            // proof run
+        if !only_forward {
+            if let Some(path) = witness_output_file {
+                let result = Self::run_batch_generate_witness::<false>(oracle, &app);
+                let mut file = File::create(&path).expect("should create file");
+                let witness: Vec<u8> = result.iter().flat_map(|x| x.to_be_bytes()).collect();
+                let hex = hex::encode(witness);
+                file.write_all(hex.as_bytes())
+                    .expect("should write to file");
+            } else {
+                // proof run
 
-            // We'll wrap the source, to collect all the reads.
-            let copy_source = ReadWitnessSource::new(oracle);
-            let items = copy_source.get_read_items();
+                // We'll wrap the source, to collect all the reads.
+                let copy_source = ReadWitnessSource::new(oracle);
+                let items = copy_source.get_read_items();
 
-            let diagnostics_config = profiler_config.map(|cfg| {
-                let mut diagnostics_cfg = DiagnosticsConfig::new(get_zksync_os_sym_path(&app));
-                diagnostics_cfg.profiler_config = Some(cfg);
-                diagnostics_cfg
-            });
+                let diagnostics_config = profiler_config.map(|cfg| {
+                    let mut diagnostics_cfg = DiagnosticsConfig::new(get_zksync_os_sym_path(&app));
+                    diagnostics_cfg.profiler_config = Some(cfg);
+                    diagnostics_cfg
+                });
 
-            let now = std::time::Instant::now();
-            let (proof_output, block_effective) = zksync_os_runner::run_and_get_effective_cycles(
-                get_zksync_os_img_path(&app),
-                diagnostics_config,
-                1 << 36,
-                copy_source,
-            );
-            info!(
-                "Simulator without witness tracing executed over {:?}",
-                now.elapsed()
-            );
-            stats.effective_used = block_effective;
-
-            #[cfg(feature = "simulate_witness_gen")]
-            {
-                zksync_os_runner::simulate_witness_tracing(
-                    get_zksync_os_img_path(),
-                    source_for_witness_bench,
-                )
-            }
-
-            // dump csr reads if env var set
-            if let Ok(output_csr) = std::env::var("CSR_READS_DUMP") {
-                // Save the read elements into a file - that can be later read with the tools/cli from zksync-airbender.
-                let mut file = File::create(&output_csr).expect("Failed to create csr reads file");
-                // Write each u32 as an 8-character hexadecimal string without newlines
-                for num in items.borrow().iter() {
-                    write!(file, "{num:08X}").expect("Failed to write to file");
-                }
-                debug!(
-                    "Successfully wrote {} u32 csr reads elements to file: {}",
-                    items.borrow().len(),
-                    output_csr
+                let now = std::time::Instant::now();
+                let (proof_output, block_effective) = zksync_os_runner::run_and_get_effective_cycles(
+                    get_zksync_os_img_path(&app),
+                    diagnostics_config,
+                    1 << 36,
+                    copy_source,
                 );
+                info!(
+                    "Simulator without witness tracing executed over {:?}",
+                    now.elapsed()
+                );
+                stats.effective_used = block_effective;
+
+                #[cfg(feature = "simulate_witness_gen")]
+                {
+                    zksync_os_runner::simulate_witness_tracing(
+                        get_zksync_os_img_path(),
+                        source_for_witness_bench,
+                    )
+                }
+
+                // dump csr reads if env var set
+                if let Ok(output_csr) = std::env::var("CSR_READS_DUMP") {
+                    // Save the read elements into a file - that can be later read with the tools/cli from zksync-airbender.
+                    let mut file = File::create(&output_csr).expect("Failed to create csr reads file");
+                    // Write each u32 as an 8-character hexadecimal string without newlines
+                    for num in items.borrow().iter() {
+                        write!(file, "{num:08X}").expect("Failed to write to file");
+                    }
+                    debug!(
+                        "Successfully wrote {} u32 csr reads elements to file: {}",
+                        items.borrow().len(),
+                        output_csr
+                    );
+                }
+
+                debug!(
+                    "{}Proof running output{} = 0x",
+                    colors::GREEN,
+                    colors::RESET
+                );
+                for word in proof_output.into_iter() {
+                    debug!("{word:08x}");
+                }
+
+                // Ensure that proof running didn't fail: check that output is not zero
+                assert!(proof_output.into_iter().any(|word| word != 0));
+
+                #[cfg(feature = "e2e_proving")]
+                run_prover(items.borrow().as_slice());
+                // TODO: we also need to update state if we want to execute next block on top
             }
-
-            debug!(
-                "{}Proof running output{} = 0x",
-                colors::GREEN,
-                colors::RESET
-            );
-            for word in proof_output.into_iter() {
-                debug!("{word:08x}");
-            }
-
-            // Ensure that proof running didn't fail: check that output is not zero
-            assert!(proof_output.into_iter().any(|word| word != 0));
-
-            #[cfg(feature = "e2e_proving")]
-            run_prover(items.borrow().as_slice());
-            // TODO: we also need to update state if we want to execute next block on top
         }
         (block_output, stats)
     }
