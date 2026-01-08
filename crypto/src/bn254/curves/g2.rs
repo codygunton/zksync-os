@@ -1,14 +1,6 @@
-#[cfg(not(any(
-    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
-    test,
-    all(feature = "proving", fuzzing)
-)))]
+#[cfg(not(any(all(target_arch = "riscv32", feature = "bigint_ops"), test)))]
 use crate::ark_ff::MontFp;
-#[cfg(any(
-    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
-    test,
-    all(feature = "proving", fuzzing)
-))]
+#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
 use crate::ark_ff_delegation::MontFp;
 use ark_ec::AffineRepr;
 use ark_ec::{

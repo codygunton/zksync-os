@@ -1,31 +1,22 @@
-// scalar_delegation: used on riscv32/riscv64 with bigint_ops
-#[cfg(any(
-    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
-    test,
-    all(feature = "proving", fuzzing)
-))]
+#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
 mod scalar_delegation;
 
-// scalar64: used when not using delegation
-#[cfg(not(any(
-    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
-    all(feature = "proving", fuzzing)
-)))]
+#[cfg(not(all(target_arch = "riscv32", feature = "bigint_ops")))]
 mod scalar64;
 
 use core::ops::{Mul, Neg};
 
 cfg_if::cfg_if! {
-    // Use bigint_ops delegation on riscv32/riscv64
-    if #[cfg(any(
-        all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
-        all(feature = "proving", fuzzing)
-    ))] {
+    if #[cfg(all(target_arch = "riscv32", feature = "bigint_ops"))] {
         pub(super) use scalar_delegation::Scalar;
     } else {
         pub(super) use scalar64::Scalar;
     }
+
 }
+
+#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+pub(super) use scalar_delegation::init;
 
 use super::{wnaf::ToWnaf, Secp256r1Err};
 
@@ -178,8 +169,17 @@ mod tests {
 
     use super::*;
 
+    #[cfg(feature = "bigint_ops")]
+    fn init() {
+        crate::secp256r1::init();
+        crate::bigint_delegation::init();
+    }
+
     #[test]
     fn test_mul() {
+        #[cfg(feature = "bigint_ops")]
+        init();
+
         proptest!(|(x: Scalar, y: Scalar, z: Scalar)| {
             prop_assert_eq!(x * &Scalar::ONE, x);
             prop_assert_eq  !(x * &Scalar::ZERO, Scalar::ZERO);
@@ -190,6 +190,9 @@ mod tests {
 
     #[test]
     fn test_invert() {
+        #[cfg(feature = "bigint_ops")]
+        init();
+
         proptest!(|(s: Scalar)| {
             let mut a = s;
             a.invert_assign();

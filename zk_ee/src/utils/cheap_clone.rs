@@ -7,7 +7,7 @@ pub trait CheapCloneRiscV {
     fn clone_or_copy(&self) -> Self;
 }
 
-#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+#[cfg(target_arch = "riscv32")]
 impl<T> CheapCloneRiscV for T
 where
     T: Copy,
@@ -18,7 +18,7 @@ where
     }
 }
 
-#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
+#[cfg(not(target_arch = "riscv32"))]
 impl<T> CheapCloneRiscV for T
 where
     T: Clone,

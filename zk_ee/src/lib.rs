@@ -16,11 +16,11 @@
 #![allow(clippy::needless_return)]
 #![allow(clippy::wrong_self_convention)]
 #![cfg_attr(
-    any(feature = "error_origins", not(any(target_arch = "riscv32", target_arch = "riscv64"))),
+    any(feature = "error_origins", not(target_arch = "riscv32")),
     allow(clippy::result_large_err)
 )]
 #![cfg_attr(
-    any(feature = "error_origins", not(any(target_arch = "riscv32", target_arch = "riscv64"))),
+    any(feature = "error_origins", not(target_arch = "riscv32")),
     allow(clippy::large_enum_variant)
 )]
 

@@ -1,18 +1,14 @@
 use alloc::vec::Vec;
-use bigint::ModexpAdvisor;
 use core::alloc::Allocator;
 
 mod bigint;
 mod u256;
 
-use self::bigint::BigintRepr;
+use self::bigint::{BigintRepr, OracleAdvisor};
 
-use zk_ee::system::logger::Logger;
-#[cfg(feature = "testing")]
-use zk_ee::system::logger::NullLogger;
+use zk_ee::{system::logger::Logger, system_io_oracle::IOOracle};
 
-#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "proving"), test))]
-pub(super) fn modexp<O: zk_ee::oracle::IOOracle, L: Logger, A: Allocator + Clone>(
+pub(super) fn modexp<O: IOOracle, L: Logger, A: Allocator + Clone>(
     base: &[u8],
     exp: &[u8],
     modulus: &[u8],
@@ -20,49 +16,26 @@ pub(super) fn modexp<O: zk_ee::oracle::IOOracle, L: Logger, A: Allocator + Clone
     _logger: &mut L,
     allocator: A,
 ) -> Vec<u8, A> {
-    let mut advisor = self::bigint::OracleAdvisor { inner: oracle };
-
-    modexp_inner::<L, A>(base, exp, modulus, _logger, &mut advisor, allocator)
-}
-
-/// Same logic as the delegated modexp used for proving, but
-/// with a naive advisor for testing purposes.
-#[cfg(feature = "testing")]
-pub fn delegated_modexp_with_naive_advisor(base: &[u8], exp: &[u8], modulus: &[u8]) -> Vec<u8> {
-    use std::alloc::Global;
-    let mut advisor = bigint::naive_advisor::NaiveAdvisor;
-    let mut logger = NullLogger;
-    modexp_inner::<NullLogger, Global>(base, exp, modulus, &mut logger, &mut advisor, Global)
-}
-
-fn modexp_inner<L: Logger, A: Allocator + Clone>(
-    base: &[u8],
-    exp: &[u8],
-    modulus: &[u8],
-    _logger: &mut L,
-    advisor: &mut impl ModexpAdvisor,
-    allocator: A,
-) -> Vec<u8, A> {
     self::u256::init();
 
+    let mut advisor = OracleAdvisor { inner: oracle };
+
     let m = BigintRepr::from_big_endian_with_double_capacity(&modulus, allocator.clone());
-    if m.digits == 0 {
+    let output = if m.digits == 0 {
         Vec::new_in(allocator)
     } else {
-        // another short circuit (as parsing below is infallible - we can even skip parsing the base and exponent)
-        if m.digits == 1 && m.backing[0].is_one() {
-            // it is base ^ exponent mod 1 == 0 in all the cases
-            return Vec::new_in(allocator);
-        }
         let min_capacity = m.capacity();
         let x = BigintRepr::from_big_endian_with_double_capacity_or_min_capacity(
             &base,
             min_capacity,
             allocator.clone(),
         );
-        let x = x.modpow(&exp, m, advisor, allocator.clone());
-        x.to_big_endian(allocator)
-    }
+        let x = x.modpow(&exp, m, &mut advisor, allocator.clone());
+        let r = x.to_big_endian(allocator);
+        r
+    };
+
+    output
 }
 
 #[cfg(test)]
@@ -71,7 +44,6 @@ mod test {
 
     use super::bigint::naive_advisor::NaiveAdvisor;
     use super::*;
-    use num_bigint::BigUint;
 
     fn invoke_precompile_no_prepadding(modulus: &[u8], base: &[u8], exp: &[u8]) -> Vec<u8> {
         super::u256::init();
@@ -79,24 +51,22 @@ mod test {
         let mut advisor = NaiveAdvisor;
         let allocator = Global;
 
-        let m = BigintRepr::from_big_endian_with_double_capacity(&modulus, allocator);
-        if m.digits == 0 {
+        let m = BigintRepr::from_big_endian_with_double_capacity(&modulus, allocator.clone());
+        let output = if m.digits == 0 {
             Vec::new_in(allocator)
         } else {
-            // another short circuit (as parsing below is infallible - we can even skip parsing the base and exponent)
-            if m.digits == 1 && m.backing[0].is_one() {
-                // it is base ^ exponent mod 1 == 0 in all the cases
-                return Vec::new_in(allocator);
-            }
             let min_capacity = m.capacity();
             let x = BigintRepr::from_big_endian_with_double_capacity_or_min_capacity(
                 &base,
                 min_capacity,
-                allocator,
+                allocator.clone(),
             );
-            let x = x.modpow(&exp, m, &mut advisor, allocator);
-            x.to_big_endian(allocator)
-        }
+            let x = x.modpow(&exp, m, &mut advisor, allocator.clone());
+            let r = x.to_big_endian(allocator);
+            r
+        };
+
+        output
     }
 
     // #[ignore = "depends on init and features"]
@@ -216,96 +186,6 @@ mod test {
         let expected =
             hex::decode("08d8fab720b60be2e3af8437e15e467c625cd8704c2382449e7a50437355c6be")
                 .unwrap();
-
-        assert_eq!(output, expected);
-    }
-
-    #[test]
-    fn test_5() {
-        // 0^1 mod 2
-
-        let base = hex::decode("00").unwrap();
-
-        let exp = hex::decode("01").unwrap();
-
-        let modulus = hex::decode("02").unwrap();
-
-        let output = invoke_precompile_no_prepadding(&modulus, &base, &exp);
-
-        let expected = hex::decode("").unwrap();
-
-        assert_eq!(output, expected);
-    }
-
-    #[test]
-    fn test_6() {
-        // 0^0 mod 2
-
-        let base = hex::decode("00").unwrap();
-
-        let exp = hex::decode("00").unwrap();
-
-        let modulus = hex::decode("02").unwrap();
-
-        let output = invoke_precompile_no_prepadding(&modulus, &base, &exp);
-
-        let expected =
-            hex::decode("0000000000000000000000000000000000000000000000000000000000000001")
-                .unwrap();
-
-        assert_eq!(output, expected);
-    }
-
-    #[test]
-    fn test_7() {
-        // 3^2 mod 1
-
-        let base = hex::decode("03").unwrap();
-
-        let exp = hex::decode("02").unwrap();
-
-        let modulus = hex::decode("01").unwrap();
-
-        let output = invoke_precompile_no_prepadding(&modulus, &base, &exp);
-
-        let expected = hex::decode("").unwrap();
-
-        assert_eq!(output, expected);
-    }
-
-    #[test]
-    fn test_8() {
-        // 0^0 mod 1
-
-        let base = hex::decode("00").unwrap();
-
-        let exp = hex::decode("00").unwrap();
-
-        let modulus = hex::decode("01").unwrap();
-
-        let output = invoke_precompile_no_prepadding(&modulus, &base, &exp);
-
-        let expected = hex::decode("").unwrap();
-
-        assert_eq!(output, expected);
-    }
-
-    #[test]
-    fn test_modexp_delegation_add_overflow_regression() {
-        let base = vec![255u8];
-        let exp = vec![48, 255, 128, 209];
-        let modulus = vec![
-            214, 2, 245, 148, 60, 16, 255, 255, 255, 255, 255, 255, 255, 12, 0, 0, 0, 216, 112,
-            144, 135, 112, 173, 239, 243, 255, 194, 78, 78, 1, 46, 10, 211, 128, 5, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        ];
-
-        let output = invoke_precompile_no_prepadding(&modulus, &base, &exp);
-
-        let base_big = BigUint::from_bytes_be(&base);
-        let exp_big = BigUint::from_bytes_be(&exp);
-        let modulus_big = BigUint::from_bytes_be(&modulus);
-        let expected = base_big.modpow(&exp_big, &modulus_big).to_bytes_be();
 
         assert_eq!(output, expected);
     }

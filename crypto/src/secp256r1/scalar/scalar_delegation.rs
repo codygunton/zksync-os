@@ -1,23 +1,33 @@
+use core::mem::MaybeUninit;
+
 use crate::ark_ff_delegation::BigInt;
 use crate::bigint_delegation::{u256, DelegatedModParams, DelegatedMontParams};
 use crate::secp256r1::Secp256r1Err;
 
-static MODULUS: BigInt<4> = BigInt::<4>(super::MODULUS);
-static REDUCTION_CONST: BigInt<4> = BigInt::<4>(super::REDUCTION_CONST);
-static R2: BigInt<4> = BigInt::<4>(super::R2);
+static mut MODULUS: MaybeUninit<BigInt<4>> = MaybeUninit::uninit();
+static mut REDUCTION_CONST: MaybeUninit<BigInt<4>> = MaybeUninit::uninit();
+static mut R2: MaybeUninit<BigInt<4>> = MaybeUninit::uninit();
+
+pub(crate) fn init() {
+    unsafe {
+        MODULUS.write(BigInt::<4>(super::MODULUS));
+        REDUCTION_CONST.write(BigInt::<4>(super::REDUCTION_CONST));
+        R2.write(BigInt::<4>(super::R2));
+    }
+}
 
 #[derive(Default, Debug)]
 pub struct ScalarParams;
 
 impl DelegatedModParams<4> for ScalarParams {
     unsafe fn modulus() -> &'static BigInt<4> {
-        &MODULUS
+        MODULUS.assume_init_ref()
     }
 }
 
 impl DelegatedMontParams<4> for ScalarParams {
     unsafe fn reduction_const() -> &'static BigInt<4> {
-        &REDUCTION_CONST
+        REDUCTION_CONST.assume_init_ref()
     }
 }
 
@@ -26,7 +36,7 @@ pub struct Scalar(BigInt<4>);
 
 impl Scalar {
     pub(crate) const ZERO: Self = Self(BigInt::zero());
-    // montgomery form
+    // montgomerry form
     pub(crate) const ONE: Self = Self(BigInt::<4>([
         884452912994769583,
         4834901526196019579,
@@ -36,7 +46,7 @@ impl Scalar {
 
     pub(super) fn to_repressentation(mut self) -> Self {
         unsafe {
-            u256::mul_assign_montgomery::<ScalarParams>(&mut self.0, &R2);
+            u256::mul_assign_montgomery::<ScalarParams>(&mut self.0, R2.assume_init_ref());
         }
         self
     }
@@ -49,8 +59,7 @@ impl Scalar {
     }
 
     pub(crate) fn reduce_be_bytes(bytes: &[u8; 32]) -> Self {
-        // Use volatile reads to prevent RISC-V 64-bit compiler optimization bugs
-        Self(u256::from_bytes_volatile(bytes)).to_repressentation()
+        Self::from_be_bytes_unchecked(bytes).to_repressentation()
     }
 
     pub(super) fn from_be_bytes_unchecked(bytes: &[u8; 32]) -> Self {
@@ -58,21 +67,8 @@ impl Scalar {
     }
 
     pub(crate) fn from_be_bytes(bytes: &[u8; 32]) -> Result<Self, Secp256r1Err> {
-        // Use volatile reads to prevent RISC-V 64-bit compiler optimization bugs
-        let val = Self(u256::from_bytes_volatile(bytes));
-        if val.overflow() {
-            Err(Secp256r1Err::InvalidSignature)
-        } else {
-            Ok(val.to_repressentation())
-        }
-    }
-
-    fn overflow(&self) -> bool {
-        let mut temp = *self;
-        let borrow = u256::sub_assign(&mut temp.0, &MODULUS);
-
-        // temp.0 >= MODULUS
-        !borrow
+        let val = Self::from_be_bytes_unchecked(bytes);
+        Ok(val.to_repressentation())
     }
 
     pub(crate) fn from_words(words: [u64; 4]) -> Self {

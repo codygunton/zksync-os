@@ -55,8 +55,7 @@ impl FieldElement8x32 {
 
     #[inline(always)]
     pub(super) fn from_bytes(bytes: &[u8; 32]) -> Option<Self> {
-        // Use volatile reads to prevent RISC-V 64-bit compiler optimization bugs
-        let value = Self(u256::from_bytes_volatile(bytes));
+        let value = Self::from_bytes_unchecked(bytes);
 
         if u256::leq(&value.0, &Self::MODULUS.0) {
             Some(value)
@@ -65,111 +64,13 @@ impl FieldElement8x32 {
         }
     }
 
-    /// Converts bytes to field element, writing to output parameter.
-    /// This avoids Copy trait issues on RISC-V 64-bit by using volatile operations.
-    /// Returns true on success, false if bytes are out of range.
-    #[cfg(target_arch = "riscv64")]
-    #[inline(never)]
-    pub(super) fn from_bytes_to(bytes: &[u8; 32], out: &mut Self) -> bool {
-        // Use volatile reads to prevent RISC-V 64-bit compiler optimization bugs
-        let value = Self(u256::from_bytes_volatile(bytes));
-
-        if u256::leq(&value.0, &Self::MODULUS) {
-            // Use volatile copy to prevent corruption when moving the value
-            out.volatile_copy_from(&value);
-            true
-        } else {
-            false
-        }
-    }
-
-    #[cfg(not(target_arch = "riscv64"))]
-    #[inline(always)]
-    pub(super) fn from_bytes_to(bytes: &[u8; 32], out: &mut Self) -> bool {
-        if let Some(value) = Self::from_bytes(bytes) {
-            *out = value;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Convert to bytes. Uses volatile reads on riscv64 to prevent compiler copy optimization bugs.
-    #[cfg(target_arch = "riscv64")]
-    #[inline(never)]
-    pub(super) fn to_bytes(&self) -> FieldBytes {
-        // Read the limbs with volatile to prevent compiler optimization bugs during copy
-        unsafe {
-            let w0 = core::ptr::read_volatile(&self.0 .0[0]);
-            let w1 = core::ptr::read_volatile(&self.0 .0[1]);
-            let w2 = core::ptr::read_volatile(&self.0 .0[2]);
-            let w3 = core::ptr::read_volatile(&self.0 .0[3]);
-            u256::to_be_bytes(crate::ark_ff_delegation::BigInt([w0, w1, w2, w3])).into()
-        }
-    }
-
-    #[cfg(not(target_arch = "riscv64"))]
     #[inline(always)]
     pub(super) fn to_bytes(self) -> FieldBytes {
         u256::to_be_bytes(self.0).into()
     }
 
-    /// Writes the field element bytes directly to the output slice.
-    /// Uses volatile reads on riscv64 to prevent compiler copy optimization bugs.
-    #[cfg(target_arch = "riscv64")]
-    #[inline(never)]
-    pub(super) fn write_bytes_to(&self, out: &mut [u8; 32]) {
-        // Read the limbs with volatile to prevent compiler optimization bugs during copy
-        unsafe {
-            let w0 = core::ptr::read_volatile(&self.0 .0[0]);
-            let w1 = core::ptr::read_volatile(&self.0 .0[1]);
-            let w2 = core::ptr::read_volatile(&self.0 .0[2]);
-            let w3 = core::ptr::read_volatile(&self.0 .0[3]);
-            let bytes = u256::to_be_bytes(crate::ark_ff_delegation::BigInt([w0, w1, w2, w3]));
-            // Use volatile writes for consistency
-            for i in 0..32 {
-                core::ptr::write_volatile(&mut out[i], bytes[i]);
-            }
-        }
-    }
-
-    #[cfg(not(target_arch = "riscv64"))]
-    #[inline(always)]
-    pub(super) fn write_bytes_to(self, out: &mut [u8; 32]) {
-        let bytes = u256::to_be_bytes(self.0);
-        // Use volatile writes for consistency with other implementations
-        unsafe {
-            for i in 0..32 {
-                core::ptr::write_volatile(&mut out[i], bytes[i]);
-            }
-        }
-    }
-
     pub(super) fn from_words(words: [u64; 4]) -> Self {
         Self(BigInt(words))
-    }
-
-    /// Volatile copy to prevent RISC-V compiler optimization bugs during copy/clone.
-    /// The RISC-V 64-bit LLVM backend generates buggy code for struct copies.
-    #[cfg(target_arch = "riscv64")]
-    #[inline(never)]
-    pub(super) fn volatile_copy_from(&mut self, src: &Self) {
-        unsafe {
-            let s0 = core::ptr::read_volatile(&src.0 .0[0]);
-            let s1 = core::ptr::read_volatile(&src.0 .0[1]);
-            let s2 = core::ptr::read_volatile(&src.0 .0[2]);
-            let s3 = core::ptr::read_volatile(&src.0 .0[3]);
-            core::ptr::write_volatile(&mut self.0 .0[0], s0);
-            core::ptr::write_volatile(&mut self.0 .0[1], s1);
-            core::ptr::write_volatile(&mut self.0 .0[2], s2);
-            core::ptr::write_volatile(&mut self.0 .0[3], s3);
-        }
-    }
-
-    #[cfg(not(target_arch = "riscv64"))]
-    #[inline(always)]
-    pub(super) fn volatile_copy_from(&mut self, src: &Self) {
-        *self = *src;
     }
 
     #[inline(always)]

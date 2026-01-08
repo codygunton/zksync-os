@@ -81,6 +81,9 @@ categories = ["cryptography"]
 [workspace.dependencies]
 blake2s_u32 = { git = "https://github.com/matter-labs/zksync-airbender", branch = "dev", default-features = false }
 common_constants = { git = "https://github.com/matter-labs/zksync-airbender", branch = "dev" }
+risc_v_simulator = { git = "https://github.com/matter-labs/zksync-airbender", branch = "dev" }
+prover_examples = { git = "https://github.com/matter-labs/zksync-airbender", branch = "dev" }
+zksync_os_interface = { version = "0.0.12" }
 ruint = { version = "1.16", default-features = false }
 arrayvec = { version = "0.7", default-features = false }
 serde = { version = "1", default-features = false }
@@ -113,16 +116,17 @@ codegen-units = 16
 debug = true
 
 [patch."https://github.com/matter-labs/zksync-airbender"]
-# Use local blake2s_u32 with riscv64 CSR delegation support
-blake2s_u32 = { path = "../zksync-airbender/blake2s_u32" }
-# Use local risc_v_simulator with PC tracking for oracle queries
-risc_v_simulator = { path = "../zksync-airbender/risc_v_simulator" }
-# Patch related crates to avoid version conflicts
-cs = { path = "../zksync-airbender/cs" }
-field = { path = "../zksync-airbender/field" }
-poseidon2 = { path = "../zksync-airbender/poseidon2" }
-non_determinism_source = { path = "../zksync-airbender/non_determinism_source" }
-prover = { path = "../zksync-airbender/prover" }
-prover_examples = { path = "../zksync-airbender/circuit_defs/prover_examples" }
-execution_utils = { path = "../zksync-airbender/execution_utils" }
-common_constants = { path = "../zksync-airbender/common_constants" }
+# Use nested zksync-airbender copy (workspace inheritance works)
+blake2s_u32 = { path = "zksync_os/zksync-airbender/blake2s_u32" }
+risc_v_simulator = { path = "zksync_os/zksync-airbender/risc_v_simulator" }
+cs = { path = "zksync_os/zksync-airbender/cs" }
+field = { path = "zksync_os/zksync-airbender/field" }
+poseidon2 = { path = "zksync_os/zksync-airbender/poseidon2" }
+non_determinism_source = { path = "zksync_os/zksync-airbender/non_determinism_source" }
+prover = { path = "zksync_os/zksync-airbender/prover" }
+prover_examples = { path = "zksync_os/zksync-airbender/circuit_defs/prover_examples" }
+execution_utils = { path = "zksync_os/zksync-airbender/execution_utils" }
+common_constants = { path = "zksync_os/zksync-airbender/common_constants" }
+riscv_common = { path = "zksync_os/zksync-airbender/riscv_common" }
+riscv_transpiler = { path = "zksync_os/zksync-airbender/riscv_transpiler" }
+trace_and_split = { path = "zksync_os/zksync-airbender/circuit_defs/trace_and_split" }

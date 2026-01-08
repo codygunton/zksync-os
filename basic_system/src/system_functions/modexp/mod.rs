@@ -4,11 +4,9 @@ use crate::cost_constants::{MODEXP_MINIMAL_COST_ERGS, MODEXP_WORST_CASE_NATIVE_P
 use alloc::vec::Vec;
 use evm_interpreter::ERGS_PER_GAS;
 use ruint::aliases::U256;
-use zk_ee::common_traits::TryExtend;
-use zk_ee::oracle::query_ids::ADVICE_SUBSPACE_MASK;
-use zk_ee::oracle::IOOracle;
 use zk_ee::system::logger::Logger;
 use zk_ee::system::SystemFunctionExt;
+use zk_ee::system_io_oracle::IOOracle;
 use zk_ee::{
     interface_error, internal_error, out_of_ergs_error,
     system::{
@@ -18,29 +16,28 @@ use zk_ee::{
     },
 };
 
-// Query ID for modular exponentiation advice from oracle
-pub const MODEXP_ADVICE_QUERY_ID: u32 = ADVICE_SUBSPACE_MASK | 0x10;
+use zk_ee::system_io_oracle::ADVISE_SUBSPACE_MASK;
 
-/// Parameters for modular exponentiation oracle query
-/// Used to request division advice for big integer operations during modexp
+pub const MODEXP_ADVISE_QUERY_ID: u32 = ADVISE_SUBSPACE_MASK | 0x10;
+
+/// Maximum length of base, exponent, modulus in bytes for modexp advise.
+/// See EIP-7823 for details.
+pub const EIP_7823_LENGTH_LIMIT: usize = 1024; // 1024 bytes
+
 #[repr(C)]
 #[derive(Debug, Default)]
-pub struct ModExpAdviceParams {
-    pub op: u32,          // Operation type (0 = division)
-    pub a_ptr: u32,       // Pointer to dividend
-    pub a_len: u32,       // Length of dividend in words
-    pub b_ptr: u32,       // Pointer to divisor
-    pub b_len: u32,       // Length of divisor in words
-    pub modulus_ptr: u32, // Pointer to modulus
-    pub modulus_len: u32, // Length of modulus in words
+pub struct ModExpAdviseParams {
+    pub op: u32,
+    pub a_ptr: u32,
+    pub a_len: u32,
+    pub b_ptr: u32,
+    pub b_len: u32,
+    pub modulus_ptr: u32,
+    pub modulus_len: u32,
 }
 
-#[cfg(any(
-    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "proving"),
-    test,
-    feature = "testing"
-))]
-pub mod delegation;
+#[cfg(any(all(target_arch = "riscv32", feature = "proving"), test))]
+mod delegation;
 
 ///
 /// modexp system function implementation.
@@ -60,7 +57,7 @@ impl<R: Resources> SystemFunctionExt<R, ModExpErrors> for ModExpImpl {
     fn execute<
         O: IOOracle,
         L: Logger,
-        D: TryExtend<u8> + ?Sized,
+        D: Extend<u8> + ?Sized,
         A: core::alloc::Allocator + Clone,
     >(
         input: &[u8],
@@ -79,9 +76,7 @@ impl<R: Resources> SystemFunctionExt<R, ModExpErrors> for ModExpImpl {
 /// Get resources from ergs, with native being ergs * constant
 fn resources_from_ergs<R: Resources>(ergs: Ergs) -> R {
     let native = <R::Native as Computational>::from_computational(
-        ergs.0
-            .saturating_div(ERGS_PER_GAS)
-            .saturating_mul(MODEXP_WORST_CASE_NATIVE_PER_GAS),
+        ergs.0.saturating_mul(MODEXP_WORST_CASE_NATIVE_PER_GAS),
     );
     R::from_ergs_and_native(ergs, native)
 }
@@ -103,7 +98,7 @@ fn read_padded(dst: &mut Vec<u8, impl Allocator>, src: &mut &[u8], provided_len:
 fn modexp_as_system_function_inner<
     O: IOOracle,
     L: Logger,
-    D: ?Sized + TryExtend<u8>,
+    D: ?Sized + Extend<u8>,
     A: Allocator + Clone,
     R: Resources,
 >(
@@ -149,10 +144,14 @@ fn modexp_as_system_function_inner<
     // On 32 bit machine precompile will cost at least around ~ (2^32/8)^2/3 ~= 9e16 gas,
     // so should be ok in practice
     let Ok(base_len) = usize::try_from(base_len) else {
-        return Err(interface_error!(ModExpInterfaceError::InvalidInputLength));
+        return Err(SubsystemError::LeafUsage(interface_error!(
+            ModExpInterfaceError::InvalidInputLength
+        )));
     };
     let Ok(mod_len) = usize::try_from(mod_len) else {
-        return Err(interface_error!(ModExpInterfaceError::InvalidInputLength));
+        return Err(SubsystemError::LeafUsage(interface_error!(
+            ModExpInterfaceError::InvalidInputLength
+        )));
     };
 
     // Handle a special case when both the base and mod length are zero.
@@ -168,8 +167,19 @@ fn modexp_as_system_function_inner<
     // So, on 32 bit machine precompile will cost at least around ~ 2^32*8/3 ~= 1e10 gas,
     // so should be ok in practice
     let Ok(exp_len) = usize::try_from(exp_len) else {
-        return Err(interface_error!(ModExpInterfaceError::InvalidInputLength));
+        return Err(SubsystemError::LeafUsage(interface_error!(
+            ModExpInterfaceError::InvalidInputLength
+        )));
     };
+
+    if base_len > EIP_7823_LENGTH_LIMIT
+        || exp_len > EIP_7823_LENGTH_LIMIT
+        || mod_len > EIP_7823_LENGTH_LIMIT
+    {
+        return Err(SubsystemError::LeafUsage(interface_error!(
+            ModExpInterfaceError::InputLengthExceedsLimit
+        )));
+    }
 
     // Used to extract ADJUSTED_EXPONENT_LENGTH.
     let exp_highp_len = core::cmp::min(exp_len, 32);
@@ -189,8 +199,7 @@ fn modexp_as_system_function_inner<
 
     // Check if we have enough gas.
     let ergs = ergs_cost(base_len as u64, exp_len as u64, mod_len as u64, &exp_highp)?;
-    let native = native_cost::<R>(base_len as u64, exp_len as u64, mod_len as u64, &exp_highp)?;
-    resources.charge(&R::from_ergs_and_native(ergs, native))?;
+    resources.charge(&resources_from_ergs::<R>(ergs))?;
 
     let mut base = Vec::try_with_capacity_in(base_len, allocator.clone())
         .map_err(|_| SystemError::LeafDefect(internal_error!("alloc")))?;
@@ -210,7 +219,7 @@ fn modexp_as_system_function_inner<
 
     // Call the modexp.
 
-    #[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "proving"), test))]
+    #[cfg(any(all(target_arch = "riscv32", feature = "proving"), test))]
     let output = self::delegation::modexp(
         base.as_slice(),
         exponent.as_slice(),
@@ -220,7 +229,7 @@ fn modexp_as_system_function_inner<
         allocator,
     );
 
-    #[cfg(not(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "proving"), test)))]
+    #[cfg(not(any(all(target_arch = "riscv32", feature = "proving"), test)))]
     let output = ::modexp::modexp(
         base.as_slice(),
         exponent.as_slice(),
@@ -230,11 +239,9 @@ fn modexp_as_system_function_inner<
 
     if output.len() >= mod_len {
         // truncate
-        dst.try_extend(output[(output.len() - mod_len)..].iter().copied())
-            .map_err(|_| out_of_ergs_error!())?;
+        dst.extend(output[(output.len() - mod_len)..].iter().copied());
     } else {
-        dst.try_extend(core::iter::repeat_n(0, mod_len - output.len()).chain(output))
-            .map_err(|_| out_of_ergs_error!())?;
+        dst.extend(core::iter::repeat_n(0, mod_len - output.len()).chain(output));
     }
 
     Ok(())
@@ -251,7 +258,18 @@ pub fn ergs_cost(
     let multiplication_complexity = {
         let max_length = core::cmp::max(base_size, mod_size);
         let words = max_length.div_ceil(8);
-        words.checked_mul(words).ok_or(out_of_ergs_error!())?
+        let mut multiplication_complexity = 16u64;
+        if max_length > 32 {
+            let words_square = words.checked_mul(words).ok_or(out_of_ergs_error!())?;
+
+            multiplication_complexity = multiplication_complexity
+                .checked_mul(words_square)
+                .ok_or(out_of_ergs_error!())?
+                .checked_mul(2)
+                .ok_or(out_of_ergs_error!())?;
+        }
+        //
+        multiplication_complexity
     };
     let iteration_count = {
         let ic = if exp_size <= 32 && exp_highp.is_zero() {
@@ -259,7 +277,8 @@ pub fn ergs_cost(
         } else if exp_size <= 32 {
             exp_highp.bit_len() as u64 - 1
         } else {
-            8u64.checked_mul(exp_size - 32)
+            16u64
+                .checked_mul(exp_size - 32)
                 .ok_or(out_of_ergs_error!())?
                 .checked_add(core::cmp::max(1, exp_highp.bit_len() as u64) - 1)
                 .ok_or(out_of_ergs_error!())?
@@ -268,34 +287,8 @@ pub fn ergs_cost(
     };
     let computed_gas = multiplication_complexity
         .checked_mul(iteration_count)
-        .ok_or(out_of_ergs_error!())?
-        .checked_div(3)
         .ok_or(out_of_ergs_error!())?;
-    let gas = core::cmp::max(200, computed_gas);
+    let gas = core::cmp::max(500, computed_gas);
     let ergs = gas.checked_mul(ERGS_PER_GAS).ok_or(out_of_ergs_error!())?;
     Ok(Ergs(ergs))
-}
-
-/// Computes the native cost for modexp.
-/// Returns an OOG error if there's an arithmetic overflow.
-pub fn native_cost<R: Resources>(
-    base_size: u64,
-    exp_size: u64,
-    mod_size: u64,
-    exp_highp: &U256,
-) -> Result<R::Native, SystemError> {
-    // Use ergs for native calculation but with the next multiple of 256 for modulus,
-    // since we use bigint delegations.
-    let ergs = ergs_cost(
-        base_size,
-        exp_size,
-        mod_size.next_multiple_of(32),
-        exp_highp,
-    )?;
-    let native = <R::Native as Computational>::from_computational(
-        ergs.0
-            .saturating_div(ERGS_PER_GAS)
-            .saturating_mul(MODEXP_WORST_CASE_NATIVE_PER_GAS),
-    );
-    Ok(native)
 }

@@ -82,8 +82,7 @@ impl ScalarInner {
     }
 
     pub(super) fn from_be_bytes(bytes: &[u8; 32]) -> Self {
-        // Use volatile reads to prevent RISC-V 64-bit compiler optimization bugs
-        let t = Self(u256::from_bytes_volatile(bytes));
+        let t = Self::from_be_bytes_unchecked(bytes);
 
         t.to_representation()
     }

@@ -1,22 +1,10 @@
-#[cfg(any(
-    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
-    test,
-    all(feature = "proving", fuzzing)
-))]
+#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
 mod fq;
 
-#[cfg(any(
-    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
-    test,
-    all(feature = "proving", fuzzing)
-))]
-pub use self::fq::Fq;
+#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+pub use self::fq::{init, Fq};
 
-#[cfg(not(any(
-    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
-    test,
-    all(feature = "proving", fuzzing)
-)))]
+#[cfg(not(any(all(target_arch = "riscv32", feature = "bigint_ops"), test)))]
 pub use ark_bn254::Fq;
 
 // Scalar field is default impl for now

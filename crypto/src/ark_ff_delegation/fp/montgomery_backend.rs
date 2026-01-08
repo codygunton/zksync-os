@@ -116,40 +116,7 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
         } else if r.is_geq_modulus() {
             None
         } else {
-            // COMPILER BUG WORKAROUND: Use volatile to prevent optimization issues
-            // See ai_plans/riscv-compiler-bugs.md
-            #[cfg(target_arch = "riscv64")]
-            {
-                // Volatile read both r and R2 limbs
-                let mut r_limbs = [0u64; N];
-                for i in 0..N {
-                    r_limbs[i] = unsafe { core::ptr::read_volatile(&r.0.0[i]) };
-                }
-                let r2_val = Self::R2;
-                let mut r2_limbs = [0u64; N];
-                for i in 0..N {
-                    r2_limbs[i] = unsafe { core::ptr::read_volatile(&r2_val.0[i]) };
-                }
-                // Create fresh Fp values from volatile-read limbs
-                let mut r_fresh: Fp<MontBackend<Self, N>, N> = Fp::new_unchecked(BigInt::new(r_limbs));
-                let r2_fresh: Fp<MontBackend<Self, N>, N> = Fp::new_unchecked(BigInt::new(r2_limbs));
-                r_fresh *= &r2_fresh;
-
-                // COMPILER BUG WORKAROUND: Volatile refresh before return
-                // The return value may get corrupted during return
-                let mut result: Fp<MontBackend<Self, N>, N> = Fp::new_unchecked(BigInt::new([0u64; N]));
-                for i in 0..N {
-                    unsafe {
-                        let val = core::ptr::read_volatile(&r_fresh.0.0[i]);
-                        core::ptr::write_volatile(&mut result.0.0[i], val);
-                    }
-                }
-                return Some(result);
-            }
-            #[cfg(not(target_arch = "riscv64"))]
-            {
-                r *= &Fp::new_unchecked(Self::R2);
-            }
+            r *= &Fp::new_unchecked(Self::R2);
             Some(r)
         }
     }

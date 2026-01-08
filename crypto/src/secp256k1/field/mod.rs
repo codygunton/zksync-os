@@ -2,25 +2,20 @@ use crate::k256::FieldBytes;
 use cfg_if::cfg_if;
 use core::ops::{AddAssign, MulAssign, SubAssign};
 
-// field_10x26: 32-bit implementation
-#[cfg(any(any(target_arch = "riscv32", target_arch = "riscv64"), test, all(feature = "proving", fuzzing)))]
+#[cfg(any(target_arch = "riscv32", test))]
 mod field_10x26;
-#[cfg(any(any(target_arch = "riscv32", target_arch = "riscv64"), test, all(feature = "proving", fuzzing)))]
+#[cfg(any(target_arch = "riscv32", test))]
 mod mod_inv32;
 
-// field_5x52: 64-bit implementation, used when not using delegation
-#[cfg(any(target_pointer_width = "64", test, all(feature = "proving", fuzzing)))]
+#[cfg(any(target_pointer_width = "64", test))]
 mod field_5x52;
-#[cfg(any(target_pointer_width = "64", test, all(feature = "proving", fuzzing)))]
+#[cfg(any(target_pointer_width = "64", test))]
 mod mod_inv64;
 
-// field_8x32: CSR delegation implementation, used on riscv32/riscv64 with bigint_ops
-#[cfg(any(
-    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
-    test,
-    all(feature = "proving", fuzzing)
-))]
+#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
 mod field_8x32;
+#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+pub use field_8x32::init;
 
 #[cfg(all(debug_assertions, not(feature = "bigint_ops")))]
 mod field_impl;
@@ -28,14 +23,9 @@ mod field_impl;
 cfg_if! {
     if #[cfg(all(debug_assertions, not(feature = "bigint_ops")))] {
         use field_impl::{FieldElementImpl as FieldElementImplConst, FieldElementImpl, FieldStorageImpl};
-    // Use bigint_ops delegation on riscv32/riscv64
-    } else if #[cfg(all(feature = "bigint_ops", any(target_arch = "riscv32", target_arch = "riscv64")))] {
-        use field_8x32::FieldElement8x32 as FieldElementImpl;
-        // For const operations, use the native implementation
-        #[cfg(target_pointer_width = "32")]
+    } else if #[cfg(feature = "bigint_ops")] {
         use field_10x26::{FieldElement10x26 as FieldElementImplConst, FieldStorage10x26 as FieldStorageImpl};
-        #[cfg(target_pointer_width = "64")]
-        use field_5x52::{FieldElement5x52 as FieldElementImplConst, FieldStorage5x52 as FieldStorageImpl};
+        use field_8x32::FieldElement8x32 as FieldElementImpl;
     } else if #[cfg(target_pointer_width = "64")] {
         use field_5x52::{FieldElement5x52 as FieldElementImpl, FieldElement5x52 as FieldElementImplConst, FieldStorage5x52 as FieldStorageImpl};
     } else if #[cfg(target_pointer_width = "32")] {
@@ -127,7 +117,7 @@ impl FieldElementConst {
 pub struct FieldElement(pub(crate) FieldElementImpl);
 
 impl FieldElement {
-    pub(crate) const ZERO: Self = Self(FieldElementImpl::ZERO);
+    pub const ZERO: Self = Self(FieldElementImpl::ZERO);
     pub(crate) const ONE: Self = Self(FieldElementImpl::ONE);
     // 0x7ae96a2b657c07106e64479eac3434e99cf0497512f58995c1396c28719501ee
     pub(crate) const BETA: Self = Self(FieldElementImpl::BETA);
@@ -137,26 +127,8 @@ impl FieldElement {
         Self(FieldElementImpl::from_bytes_unchecked(bytes))
     }
 
-    pub(crate) fn from_bytes(bytes: &[u8; 32]) -> Option<Self> {
+    pub fn from_bytes(bytes: &[u8; 32]) -> Option<Self> {
         FieldElementImpl::from_bytes(bytes).map(Self)
-    }
-
-    /// Converts bytes to field element, writing to output parameter.
-    /// This avoids Copy trait issues on RISC-V 64-bit by using volatile operations.
-    /// Returns true on success, false if bytes are out of range.
-    #[cfg(all(target_arch = "riscv64", feature = "bigint_ops"))]
-    pub(crate) fn from_bytes_to(bytes: &[u8; 32], out: &mut Self) -> bool {
-        FieldElementImpl::from_bytes_to(bytes, &mut out.0)
-    }
-
-    #[cfg(not(all(target_arch = "riscv64", feature = "bigint_ops")))]
-    pub(crate) fn from_bytes_to(bytes: &[u8; 32], out: &mut Self) -> bool {
-        if let Some(value) = Self::from_bytes(bytes) {
-            *out = value;
-            true
-        } else {
-            false
-        }
     }
 
     pub(crate) fn mul_in_place(&mut self, rhs: &Self) {
@@ -167,11 +139,11 @@ impl FieldElement {
         self.0.mul_int_in_place(rhs);
     }
 
-    pub(crate) fn square_in_place(&mut self) {
+    pub fn square_in_place(&mut self) {
         self.0.square_in_place();
     }
 
-    pub(crate) fn add_in_place(&mut self, rhs: &Self) {
+    pub fn add_in_place(&mut self, rhs: &Self) {
         self.0.add_in_place(&rhs.0);
     }
 
@@ -179,7 +151,7 @@ impl FieldElement {
         self.0.double_in_place();
     }
 
-    pub(crate) fn sub_in_place(&mut self, rhs: &Self) {
+    pub fn sub_in_place(&mut self, rhs: &Self) {
         self.0.sub_in_place(&rhs.0);
     }
 
@@ -187,22 +159,8 @@ impl FieldElement {
         self.0.add_int_in_place(rhs);
     }
 
-    pub(crate) fn invert_in_place(&mut self) {
+    pub fn invert_in_place(&mut self) {
         self.0.invert_in_place()
-    }
-
-    /// Volatile copy to prevent RISC-V compiler optimization bugs during copy/clone.
-    /// The RISC-V 64-bit LLVM backend generates buggy code for struct copies.
-    #[cfg(all(target_arch = "riscv64", feature = "bigint_ops"))]
-    #[inline(never)]
-    pub(crate) fn volatile_copy_from(&mut self, src: &Self) {
-        self.0.volatile_copy_from(&src.0);
-    }
-
-    #[cfg(not(all(target_arch = "riscv64", feature = "bigint_ops")))]
-    #[inline(always)]
-    pub(crate) fn volatile_copy_from(&mut self, src: &Self) {
-        *self = *src;
     }
 
     pub(crate) fn sqrt_in_place_unchecked(&mut self) {
@@ -254,7 +212,7 @@ impl FieldElement {
         self.pow2k_in_place(2);
     }
 
-    pub(crate) fn sqrt_in_place(&mut self) -> bool {
+    pub fn sqrt_in_place(&mut self) -> bool {
         let original = *self;
         self.sqrt_in_place_unchecked();
 
@@ -265,7 +223,7 @@ impl FieldElement {
 
         is_root.normalizes_to_zero()
     }
-    pub(crate) fn negate_in_place(&mut self, magnitude: u32) {
+    pub fn negate_in_place(&mut self, magnitude: u32) {
         self.0.negate_in_place(magnitude);
     }
 
@@ -273,11 +231,11 @@ impl FieldElement {
         self.0.normalize_in_place();
     }
 
-    pub(crate) fn is_odd(&self) -> bool {
+    pub fn is_odd(&self) -> bool {
         self.0.is_odd()
     }
 
-    pub(crate) fn normalizes_to_zero(&self) -> bool {
+    pub fn normalizes_to_zero(&self) -> bool {
         self.0.normalizes_to_zero()
     }
 
@@ -288,16 +246,9 @@ impl FieldElement {
         }
     }
 
-    pub(crate) fn to_bytes(mut self) -> FieldBytes {
+    pub fn to_bytes(mut self) -> FieldBytes {
         self.normalize_in_place();
         self.0.to_bytes()
-    }
-
-    /// Writes the field element bytes directly to the output slice.
-    /// Uses volatile writes to prevent compiler optimization issues on riscv64.
-    pub(crate) fn write_bytes_to(mut self, out: &mut [u8; 32]) {
-        self.normalize_in_place();
-        self.0.write_bytes_to(out)
     }
 
     #[cfg(test)]
@@ -400,6 +351,9 @@ mod tests {
 
     #[test]
     fn storage_round_trip() {
+        #[cfg(feature = "bigint_ops")]
+        super::field_8x32::init();
+
         proptest!(|(x: FieldElement)| {
              prop_assert_eq!(x.to_storage().to_field_elem(), x);
         })
@@ -407,6 +361,9 @@ mod tests {
 
     #[test]
     fn to_bytes_round_trip() {
+        #[cfg(feature = "bigint_ops")]
+        super::field_8x32::init();
+
         proptest!(|(x: FieldElement)| {
             let bytes: [u8; 32] = x.to_bytes().as_slice().try_into().unwrap();
             prop_assert_eq!(
@@ -418,6 +375,9 @@ mod tests {
 
     #[test]
     fn from_bytes_round_trip() {
+        #[cfg(feature = "bigint_ops")]
+        super::field_8x32::init();
+
         proptest!(|(bytes: [u8; 32])| {
             prop_assert_eq!(
                 &*FieldElement::from_bytes(&bytes).unwrap().to_bytes(),
@@ -428,6 +388,9 @@ mod tests {
 
     #[test]
     fn test_mul() {
+        #[cfg(feature = "bigint_ops")]
+        super::field_8x32::init();
+
         proptest!(|(x: FieldElement, y: FieldElement, z: FieldElement)| {
             let mut a = x;
             let mut b = y;
@@ -477,6 +440,9 @@ mod tests {
 
     #[test]
     fn test_invert() {
+        #[cfg(feature = "bigint_ops")]
+        super::field_8x32::init();
+
         proptest!(|(x: FieldElement)| {
             let mut a = x;
             a.invert_in_place();
@@ -508,6 +474,9 @@ mod tests {
 
     #[test]
     fn test_add() {
+        #[cfg(feature = "bigint_ops")]
+        super::field_8x32::init();
+
         proptest!(|(x: FieldElement, y: FieldElement, z: FieldElement)| {
             let mut a = x;
             let mut b = y;
@@ -549,6 +518,9 @@ mod tests {
 
     #[test]
     fn test_square() {
+        #[cfg(feature = "bigint_ops")]
+        super::field_8x32::init();
+
         proptest!(|(x: FieldElement)| {
             let mut x_neg = x;
             x_neg.negate_in_place(1);

@@ -1,24 +1,44 @@
 #![feature(allocator_api)]
-#![allow(incomplete_features)]
-#![feature(generic_const_exprs)]
 
+#[cfg(feature = "prover")]
 use prover_examples::prover::VectorMemoryImplWithRom;
-use risc_v_simulator::sim::BinarySource;
+
 use risc_v_simulator::{
     abstractions::{memory::VectorMemoryImpl, non_determinism::NonDeterminismCSRSource},
-    cycle::IMStandardIsaConfig,
-    sim::{DiagnosticsConfig, ProfilerConfig, SimulatorConfig},
+    sim::{BinarySource, DiagnosticsConfig, ProfilerConfig, SimulatorConfig},
 };
-use std::{alloc::Global, io::Read, path::PathBuf};
+use std::{io::Read, path::PathBuf, str::FromStr};
+
+pub mod run_transpiler;
+
+/// Runs the zksync_os binary on a simulator with a given non_determinism source for that many cycles.
+/// If you enable diagnostics, it will print the flamegraph - but the run will be a lot slower.
+pub fn run_default(
+    cycles: usize,
+    non_determinism_source: impl NonDeterminismCSRSource<VectorMemoryImpl>,
+    enable_diagnostics: bool,
+) -> [u32; 8] {
+    run_default_with_flamegraph_path(
+        cycles,
+        non_determinism_source,
+        if enable_diagnostics {
+            Some(std::env::current_dir().unwrap().join("flamegraph.svg"))
+        } else {
+            None
+        },
+    )
+}
 
 pub fn run_default_with_flamegraph_path(
-    bin_path: PathBuf,
-    sym_path: PathBuf,
     cycles: usize,
     non_determinism_source: impl NonDeterminismCSRSource<VectorMemoryImpl>,
     diagnostics_path: Option<PathBuf>,
 ) -> [u32; 8] {
+    let zksync_os_path =
+        std::env::var("ZKSYNC_OS_DIR").unwrap_or_else(|_| String::from("../zksync_os"));
     let diag_config = diagnostics_path.map(|path| {
+        let sym_path = PathBuf::from_str(&zksync_os_path).unwrap().join("app.elf");
+
         let mut d = DiagnosticsConfig::new(sym_path);
 
         d.profiler_config = {
@@ -32,12 +52,17 @@ pub fn run_default_with_flamegraph_path(
 
         d
     });
-    run(bin_path, diag_config, cycles, non_determinism_source)
+    run(
+        PathBuf::from_str(&zksync_os_path).unwrap().join("app.bin"),
+        diag_config,
+        cycles,
+        non_determinism_source,
+    )
 }
 
 ///
 /// Runs zkOS on RISC-V (proof running) with given params:
-/// `img_path` - path to ZKsync OS binary file (for example "zksync_os/for_tests.bin")
+/// `img_path` - path to ZKsync OS binary file (for now always in "zksync_os/app.bin")
 /// `diagnostics` - optional diagnostics config, can be used to enable profiler.
 /// `cycles` - limit for number of cycles.
 /// `non_determinism_source` - non-determinism source used to read values from outside
@@ -60,6 +85,7 @@ pub fn run_and_get_effective_cycles(
     cycles: usize,
     non_determinism_source: impl NonDeterminismCSRSource<VectorMemoryImpl>,
 ) -> ([u32; 8], Option<u64>) {
+    println!("ZK RISC-V simulator is starting");
 
     // Check that the bin file is present and readable.
     let mut file = std::fs::File::open(img_path.clone())
@@ -67,18 +93,15 @@ pub fn run_and_get_effective_cycles(
     let mut buffer = vec![];
     file.read_to_end(&mut buffer).expect("must read the file");
 
-    let config = SimulatorConfig {
-        bin: BinarySource::Path(img_path),
-        cycles,
-        entry_point: 0,
-        diagnostics,
-    };
+    let config = SimulatorConfig::new(BinarySource::Path(img_path), 0, cycles, diagnostics);
 
     let run_result =
         risc_v_simulator::runner::run_simple_with_entry_point_and_non_determimism_source(
             config,
             non_determinism_source,
         );
+
+    let final_state = run_result.state;
 
     risc_v_simulator::cycle::state::output_opcode_stats();
 
@@ -95,15 +118,19 @@ pub fn run_and_get_effective_cycles(
     // TODO: move to new simulator
     #[allow(deprecated)]
     (
-        run_result.state.registers[10..18].try_into().unwrap(),
+        final_state.registers[10..18].try_into().unwrap(),
         block_effective,
     )
 }
 
+#[cfg(feature = "prover")]
 pub fn simulate_witness_tracing(
     img_path: PathBuf,
     non_determinism_source: impl NonDeterminismCSRSource<VectorMemoryImplWithRom>,
 ) {
+    println!("ZK RISC-V simulator is starting");
+    use risc_v_simulator::cycle::IMStandardIsaConfig;
+    use std::alloc::Global;
 
     // Check that the bin file is present and readable.
     let mut file = std::fs::File::open(img_path.clone())
@@ -113,8 +140,7 @@ pub fn simulate_witness_tracing(
 
     let num_instances_upper_bound = 1 << 14;
     let binary = execution_utils::get_padded_binary(&buffer);
-
-    let worker = prover_examples::prover::worker::Worker::new();
+    let worker = trace_and_split::setups::prover::worker::Worker::new();
 
     let now = std::time::Instant::now();
     let (all_witness_instances, _, _, _) =
@@ -122,7 +148,6 @@ pub fn simulate_witness_tracing(
             num_instances_upper_bound,
             &binary,
             non_determinism_source,
-            1 << 22,
             &worker,
         );
     let elapsed = now.elapsed();
@@ -138,7 +163,6 @@ pub fn simulate_witness_tracing(
 mod test {
     use super::*;
     use risc_v_simulator::abstractions::non_determinism::QuasiUARTSource;
-    use std::str::FromStr;
 
     #[test]
     /// Quick test that uses the .bin file that computes the n-th fibonacci number.

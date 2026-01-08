@@ -1,5 +1,5 @@
 // based on https://github.com/RustCrypto/elliptic-curves/blob/master/p256/src/arithmetic/scalar/scalar64.rs
-use crate::secp256r1::{u64_arithmetic::*, Secp256r1Err};
+use crate::secp256r1::{u64_arithmatic::*, Secp256r1Err};
 
 use super::{MODULUS, MU};
 
@@ -38,47 +38,8 @@ impl Scalar {
     }
 
     pub(crate) fn from_be_bytes(bytes: &[u8; 32]) -> Result<Self, Secp256r1Err> {
-        // Use volatile reads on RISC-V 64-bit to prevent compiler optimization bugs
-        #[cfg(target_arch = "riscv64")]
-        let val = Self::from_be_bytes_volatile(bytes);
-        #[cfg(not(target_arch = "riscv64"))]
         let val = Self::from_be_bytes_unchecked(bytes);
-
-        if val.overflow() {
-            Err(Secp256r1Err::InvalidSignature)
-        } else {
-            Ok(val)
-        }
-    }
-
-    /// Volatile-safe version of from_be_bytes for RISC-V 64-bit.
-    #[cfg(target_arch = "riscv64")]
-    #[inline(never)]
-    fn from_be_bytes_volatile(bytes: &[u8; 32]) -> Self {
-        unsafe {
-            let read = |i: usize| core::ptr::read_volatile(&bytes[i]);
-
-            Self([
-                u64::from_le_bytes([
-                    read(31), read(30), read(29), read(28), read(27), read(26), read(25), read(24),
-                ]),
-                u64::from_le_bytes([
-                    read(23), read(22), read(21), read(20), read(19), read(18), read(17), read(16),
-                ]),
-                u64::from_le_bytes([
-                    read(15), read(14), read(13), read(12), read(11), read(10), read(9), read(8),
-                ]),
-                u64::from_le_bytes([
-                    read(7), read(6), read(5), read(4), read(3), read(2), read(1), read(0),
-                ]),
-            ])
-        }
-    }
-
-    fn overflow(&self) -> bool {
-        let (_, of) = overflowing_sub(&self.0, &MODULUS);
-        // temp.0 >= MODULUS
-        !of
+        Ok(val)
     }
 
     #[cfg(test)]

@@ -10,10 +10,7 @@ use zk_ee::{interface_error, internal_error, wrap_error};
 
 use super::*;
 
-impl<S: EthereumLikeTypes, F: BasicTransactionFlow<S>> BasicBootloader<S, F>
-where
-    S::IO: IOSubsystemExt,
-{
+impl<S: EthereumLikeTypes> BasicBootloader<S> {
     ///
     /// Mints [value] to address [to].
     ///
@@ -26,8 +23,6 @@ where
     where
         S::IO: IOSubsystemExt,
     {
-        // TODO: debug implementation for ruint types uses global alloc, which panics in ZKsync OS
-        #[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
         let _ = system.get_logger().write_fmt(format_args!(
             "Minting {nominal_token_value:?} tokens to {to:?}\n"
         ));
@@ -47,7 +42,9 @@ where
                         let _ = system
                             .get_logger()
                             .write_fmt(format_args!("Error while minting: {balance_error:?}"));
-                        interface_error!(BootloaderInterfaceError::MintingBalanceOverflow)
+                        SubsystemError::LeafUsage(interface_error!(
+                            BootloaderInterfaceError::MintingBalanceOverflow
+                        ))
                     }
                     _ => wrap_error!(e),
                 }
@@ -75,6 +72,7 @@ where
     ) -> Result<CompletedExecution<'a, S>, BootloaderSubsystemError>
     where
         S::IO: IOSubsystemExt,
+        S: 'a,
     {
         if DEBUG_OUTPUT {
             let _ = system
@@ -100,7 +98,7 @@ where
                         SystemError::LeafRuntime(RuntimeError::OutOfErgs(_)) => {
                             unreachable!("OOG on infinite resources")
                         }
-                        e @ SystemError::LeafRuntime(RuntimeError::FatalRuntimeError(_)) => {
+                        e @ SystemError::LeafRuntime(RuntimeError::OutOfNativeResources(_)) => {
                             e.into()
                         }
                         SystemError::LeafDefect(e) => e.into(),
@@ -121,17 +119,18 @@ where
 
         let ee_type = ExecutionEnvironmentType::parse_ee_version_byte(ee_version)?;
 
-        let initial_request = ExternalCallRequest {
-            available_resources: resources.clone(),
-            ergs_to_pass: resources.ergs(),
-            callers_caller: B160::ZERO, // Fine to use placeholder
-            caller: *caller,
-            callee: *callee,
-            modifier: CallModifier::NoModifier,
-            input: calldata,
-            call_scratch_space: None,
-            nominal_token_value: *nominal_token_value,
-        };
+        let initial_request =
+            ExecutionEnvironmentSpawnRequest::RequestedExternalCall(ExternalCallRequest {
+                available_resources: resources.clone(),
+                ergs_to_pass: Ergs(0),      // Doesn't matter in this case
+                callers_caller: B160::ZERO, // Fine to use placeholder
+                caller: *caller,
+                callee: *callee,
+                modifier: CallModifier::NoModifier,
+                calldata,
+                call_scratch_space: None,
+                nominal_token_value: *nominal_token_value,
+            });
 
         let final_state = run_till_completion(
             memories,
@@ -142,19 +141,24 @@ where
             tracer,
         )?;
 
-        let CompletedExecution {
+        let TransactionEndPoint::CompletedExecution(CompletedExecution {
+            return_values,
             resources_returned,
-            result,
-        } = final_state;
+            reverted,
+        }) = final_state
+        else {
+            return Err(internal_error!("attempt to run ended up in invalid state").into());
+        };
 
         if let Some(ref rollback_handle) = rollback_handle {
             system
-                .finish_global_frame(result.failed().then_some(rollback_handle))
+                .finish_global_frame(reverted.then_some(rollback_handle))
                 .map_err(|_| internal_error!("must finish execution frame"))?;
         }
         Ok(CompletedExecution {
+            return_values,
             resources_returned,
-            result,
+            reverted,
         })
     }
 }

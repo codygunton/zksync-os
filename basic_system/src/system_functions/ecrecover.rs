@@ -1,190 +1,8 @@
 use super::*;
 use crate::cost_constants::{ECRECOVER_COST_ERGS, ECRECOVER_NATIVE_COST};
-use zk_ee::common_traits::TryExtend;
-use zk_ee::out_of_return_memory;
 use zk_ee::system::base_system_functions::{Secp256k1ECRecoverErrors, SystemFunction};
 use zk_ee::system::errors::{subsystem::SubsystemError, system::SystemError};
-use zk_ee::system::Computational;
-
-/// CSR-based QuasiUART for RISC-V guests (both Airbender and Zisk)
-/// Uses CSR 0x7c0 with the QuasiUART protocol for unified logging.
-/// Buffers entire lines to produce clean output with single [GUEST] prefix.
-#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
-pub mod uart_log {
-    use arrayvec::ArrayString;
-
-    const HELLO_MARKER: u32 = u32::MAX; // 0xffffffff = UART_QUERY_ID
-    // Buffer size: enough for longest log line
-    const BUF_SIZE: usize = 512;
-
-    // Single-threaded guest buffer
-    static mut LINE_BUF: ArrayString<BUF_SIZE> = ArrayString::new_const();
-
-    #[inline(always)]
-    fn csr_write_word(word: usize) {
-        unsafe {
-            core::arch::asm!(
-                "csrrw x0, 0x7c0, {rd}",
-                rd = in(reg) word,
-                options(nomem, nostack, preserves_flags)
-            )
-        }
-    }
-
-    fn flush_buffer(s: &str) {
-        let len = s.len();
-        if len == 0 {
-            return;
-        }
-        // QuasiUART protocol:
-        // 1. Write HELLO_MARKER (0xffffffff)
-        // 2. Write word count (ceil(len/4) + 1 for length word)
-        // 3. Write message length in bytes
-        // 4. Write message data as 4-byte LE words
-        csr_write_word(HELLO_MARKER as usize);
-        csr_write_word(len.next_multiple_of(4) / 4 + 1);
-        csr_write_word(len);
-
-        // Write bytes in 4-byte words
-        let bytes = s.as_bytes();
-        let mut i = 0;
-        while i + 4 <= len {
-            let word = u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
-            csr_write_word(word as usize);
-            i += 4;
-        }
-
-        // Flush remaining bytes (padded with zeros)
-        if i < len {
-            let mut buf = [0u8; 4];
-            for j in 0..(len - i) {
-                buf[j] = bytes[i + j];
-            }
-            csr_write_word(u32::from_le_bytes(buf) as usize);
-        }
-    }
-
-    #[inline(never)]
-    pub fn write_str(s: &str) {
-        unsafe {
-            let _ = LINE_BUF.try_push_str(s);
-        }
-    }
-
-    #[inline(never)]
-    pub fn write_u8(val: u8) {
-        // Write decimal representation
-        if val >= 100 {
-            unsafe {
-                let _ = LINE_BUF.try_push((b'0' + val / 100) as char);
-            }
-        }
-        if val >= 10 {
-            unsafe {
-                let _ = LINE_BUF.try_push((b'0' + (val / 10) % 10) as char);
-            }
-        }
-        unsafe {
-            let _ = LINE_BUF.try_push((b'0' + val % 10) as char);
-        }
-    }
-
-    #[inline(never)]
-    pub fn write_usize(mut val: usize) {
-        if val == 0 {
-            unsafe {
-                let _ = LINE_BUF.try_push('0');
-            }
-            return;
-        }
-        // Buffer for digits (max 20 digits for u64)
-        let mut digits = [0u8; 20];
-        let mut i = 0;
-        while val > 0 {
-            digits[i] = (val % 10) as u8;
-            val /= 10;
-            i += 1;
-        }
-        // Write digits in reverse
-        while i > 0 {
-            i -= 1;
-            unsafe {
-                let _ = LINE_BUF.try_push((b'0' + digits[i]) as char);
-            }
-        }
-    }
-
-    #[inline(never)]
-    pub fn write_hex_byte(byte: u8) {
-        const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
-        unsafe {
-            let _ = LINE_BUF.try_push(HEX_CHARS[(byte >> 4) as usize] as char);
-            let _ = LINE_BUF.try_push(HEX_CHARS[(byte & 0xf) as usize] as char);
-        }
-    }
-
-    #[inline(never)]
-    pub fn write_hex_32(bytes: &[u8; 32]) {
-        write_str("0x");
-        for b in bytes {
-            write_hex_byte(*b);
-        }
-    }
-
-    #[inline(never)]
-    pub fn write_hex_slice(bytes: &[u8]) {
-        write_str("0x");
-        for b in bytes {
-            write_hex_byte(*b);
-        }
-    }
-
-    #[inline(never)]
-    pub fn newline() {
-        unsafe {
-            let _ = LINE_BUF.try_push('\n');
-            flush_buffer(&LINE_BUF);
-            LINE_BUF.clear();
-        }
-    }
-}
-
-/// No-op stub for non-RISC-V targets (host builds, benchmarks, etc.)
-#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
-pub mod uart_log {
-    #[inline(always)]
-    pub fn write_str(_s: &str) {}
-    #[inline(always)]
-    pub fn write_u8(_val: u8) {}
-    #[inline(always)]
-    pub fn write_usize(_val: usize) {}
-    #[inline(always)]
-    pub fn write_hex_byte(_byte: u8) {}
-    #[inline(always)]
-    pub fn write_hex_32(_bytes: &[u8; 32]) {}
-    #[inline(always)]
-    pub fn write_hex_slice(_bytes: &[u8]) {}
-    #[inline(always)]
-    pub fn newline() {}
-}
-
-/// Global transaction counter for debugging
-#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
-static mut TX_COUNTER: usize = 0;
-
-#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
-pub fn get_and_increment_tx_counter() -> usize {
-    unsafe {
-        let val = TX_COUNTER;
-        TX_COUNTER += 1;
-        val
-    }
-}
-
-#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
-pub fn get_and_increment_tx_counter() -> usize {
-    0
-}
+use zk_ee::system::{Computational, SystemFunctionExt};
 
 ///
 /// ecrecover system function implementation.
@@ -197,249 +15,437 @@ impl<R: Resources> SystemFunction<R, Secp256k1ECRecoverErrors> for EcRecoverImpl
     /// If the input is invalid(v != 27|28 or failed to recover signer) returns `Ok(0)`.
     ///
     /// Returns `OutOfGas` if not enough resources provided.
-    fn execute<D: TryExtend<u8> + ?Sized, A: core::alloc::Allocator + Clone>(
+    fn execute<D: Extend<u8> + ?Sized, A: core::alloc::Allocator + Clone>(
         input: &[u8],
         output: &mut D,
         resources: &mut R,
         _allocator: A,
     ) -> Result<(), SubsystemError<Secp256k1ECRecoverErrors>> {
-        Ok(cycle_marker::wrap_with_resources!("ecrecover", resources, {
-            ecrecover_as_system_function_inner(input, output, resources)
-        })?)
+        Ok(cycle_marker::wrap_with_resources!(
+            "ecrecover",
+            resources,
+            { ecrecover_as_system_function_inner(input, output, resources) }
+        )?)
+    }
+}
+
+impl<R: Resources> SystemFunctionExt<R, Secp256k1ECRecoverErrors> for EcRecoverImpl {
+    /// If the input size is less than expected - it will be padded with zeroes.
+    /// If the input size is greater - redundant bytes will be ignored.
+    /// If the input is invalid(v != 27|28 or failed to recover signer) returns `Ok(0)`.
+    ///
+    /// Returns `OutOfGas` if not enough resources provided.
+    fn execute<
+        O: zk_ee::system_io_oracle::IOOracle,
+        L: zk_ee::system::logger::Logger,
+        D: Extend<u8> + ?Sized,
+        A: core::alloc::Allocator + Clone,
+    >(
+        input: &[u8],
+        output: &mut D,
+        resources: &mut R,
+        oracle: &mut O,
+        logger: &mut L,
+        _allocator: A,
+    ) -> Result<(), SubsystemError<Secp256k1ECRecoverErrors>> {
+        #[cfg(not(target_arch = "riscv32"))]
+        {
+            Ok(cycle_marker::wrap_with_resources!(
+                "ecrecover",
+                resources,
+                { ecrecover_as_system_function_inner(input, output, resources) }
+            )?)
+        }
+
+        #[cfg(target_arch = "riscv32")]
+        {
+            #[cfg(not(feature = "ecrecover_with_oracle"))]
+            const USE_ORACLE: bool = false;
+
+            #[cfg(feature = "ecrecover_with_oracle")]
+            const USE_ORACLE: bool = true;
+
+            if USE_ORACLE {
+                Ok(cycle_marker::wrap_with_resources!(
+                    "ecrecover",
+                    resources,
+                    {
+                        ecrecover_as_system_function_inner_with_oracle(
+                            input, output, resources, oracle, logger,
+                        )
+                    }
+                )?)
+            } else {
+                Ok(cycle_marker::wrap_with_resources!(
+                    "ecrecover",
+                    resources,
+                    { ecrecover_as_system_function_inner(input, output, resources) }
+                )?)
+            }
+        }
     }
 }
 
 fn ecrecover_as_system_function_inner<
     S: ?Sized + MinimalByteAddressableSlice,
-    D: ?Sized + TryExtend<u8>,
+    D: ?Sized + Extend<u8>,
     R: Resources,
 >(
     src: &S,
     dst: &mut D,
     resources: &mut R,
 ) -> Result<(), SystemError> {
-    let tx_num = get_and_increment_tx_counter();
-
     resources.charge(&R::from_ergs_and_native(
         ECRECOVER_COST_ERGS,
         R::Native::from_computational(ECRECOVER_NATIVE_COST),
     ))?;
     // digest, v, r, s in ABI
     let mut buffer = [0u8; 128];
-    // WORKAROUND: Use volatile reads AND writes to prevent compiler optimization issues on riscv64.
-    // Normal reads from input buffer memory (EVM heap) produce corrupted data on ZisK.
-    // See ai_plans/riscv-compiler-bugs.md for details.
-    let mut idx = 0usize;
-    for byte in src.iter() {
-        if idx >= 128 {
-            break;
-        }
-        unsafe {
-            let b = core::ptr::read_volatile(byte);
-            core::ptr::write_volatile(&mut buffer[idx], b);
-        }
-        idx += 1;
+    for (dst, src) in buffer.iter_mut().zip(src.iter()) {
+        *dst = *src;
     }
 
     // follow https://github.com/ethereum/go-ethereum/blob/aadcb886753079d419f966a3bc990f708f8d1c3b/core/vm/contracts.go#L188
 
-    let mut pk_bytes = [0u8; 65];
-
-    let success = unsafe {
-        let mut it = buffer.array_chunks::<32>();
+    let mut it = buffer.as_chunks::<32>().0.iter();
+    let recovered_pubkey_bytes = unsafe {
         let digest = it.next().unwrap_unchecked();
         let v = it.next().unwrap_unchecked();
         let r = it.next().unwrap_unchecked();
         let s = it.next().unwrap_unchecked();
 
-        // Log inputs for debugging
-        uart_log::write_str("[ecrecover] TX#");
-        uart_log::write_usize(tx_num);
-        uart_log::write_str(" INPUT digest=");
-        uart_log::write_hex_32(digest);
-        uart_log::newline();
-
-        uart_log::write_str("[ecrecover] TX#");
-        uart_log::write_usize(tx_num);
-        uart_log::write_str(" INPUT r=");
-        uart_log::write_hex_32(r);
-        uart_log::newline();
-
-        uart_log::write_str("[ecrecover] TX#");
-        uart_log::write_usize(tx_num);
-        uart_log::write_str(" INPUT s=");
-        uart_log::write_hex_32(s);
-        uart_log::newline();
-
-        uart_log::write_str("[ecrecover] TX#");
-        uart_log::write_usize(tx_num);
-        uart_log::write_str(" INPUT v[31]=");
-        uart_log::write_u8(v[31]);
-        uart_log::newline();
-
         if v[..31].iter().all(|el| *el == 0) == false {
-            uart_log::write_str("[ecrecover] TX#");
-            uart_log::write_usize(tx_num);
-            uart_log::write_str(" EARLY_EXIT: v prefix non-zero");
-            uart_log::newline();
             return Ok(());
         }
 
         let rec_id = v[31].wrapping_sub(27);
-
-        uart_log::write_str("[ecrecover] TX#");
-        uart_log::write_usize(tx_num);
-        uart_log::write_str(" rec_id=");
-        uart_log::write_u8(rec_id);
-        uart_log::newline();
-
         if (rec_id == 0 || rec_id == 1) == false {
-            uart_log::write_str("[ecrecover] TX#");
-            uart_log::write_usize(tx_num);
-            uart_log::write_str(" EARLY_EXIT: invalid rec_id");
-            uart_log::newline();
             return Ok(());
         }
 
-        ecrecover_inner(digest, r, s, rec_id, &mut pk_bytes, tx_num).is_ok()
+        let Ok(pk_bytes) = ecrecover_inner(digest, r, s, rec_id) else {
+            return Ok(());
+        };
+
+        pk_bytes
     };
+    let bytes_ref = recovered_pubkey_bytes.as_ref();
 
-    if !success {
-        uart_log::write_str("[ecrecover] TX#");
-        uart_log::write_usize(tx_num);
-        uart_log::write_str(" FAILED: ecrecover_inner returned error");
-        uart_log::newline();
-        return Ok(());
-    }
-
-    // Log pk_bytes output
-    uart_log::write_str("[ecrecover] TX#");
-    uart_log::write_usize(tx_num);
-    uart_log::write_str(" pk_bytes[0]=");
-    uart_log::write_hex_byte(pk_bytes[0]);
-    uart_log::newline();
-
-    uart_log::write_str("[ecrecover] TX#");
-    uart_log::write_usize(tx_num);
-    uart_log::write_str(" pk_bytes[1..33]=");
-    uart_log::write_hex_slice(&pk_bytes[1..33]);
-    uart_log::newline();
-
-    uart_log::write_str("[ecrecover] TX#");
-    uart_log::write_usize(tx_num);
-    uart_log::write_str(" pk_bytes[33..65]=");
-    uart_log::write_hex_slice(&pk_bytes[33..65]);
-    uart_log::newline();
-
+    use crypto::sha3::Keccak256;
     use crypto::MiniDigest;
-    let address_hash = <crypto::sha3::Keccak256 as MiniDigest>::digest(&pk_bytes[1..]);
+    let address_hash = Keccak256::digest(&bytes_ref[1..]);
 
-    // Log the final address
-    uart_log::write_str("[ecrecover] TX#");
-    uart_log::write_usize(tx_num);
-    uart_log::write_str(" address=");
-    uart_log::write_hex_slice(&address_hash[12..]);
-    uart_log::newline();
-
-    dst.try_extend(core::iter::repeat_n(0, 12).chain(address_hash.into_iter().skip(12)))
-        .map_err(|_| out_of_return_memory!())?;
+    dst.extend(core::iter::repeat_n(0, 12).chain(address_hash.into_iter().skip(12)));
 
     Ok(())
 }
 
-/// Performs ecrecover and writes the result to the output buffer using volatile writes.
-/// This avoids return value corruption caused by compiler optimizations on RISC-V.
 pub fn ecrecover_inner(
     digest: &[u8; 32],
     r: &[u8; 32],
     s: &[u8; 32],
     rec_id: u8,
-    out: &mut [u8; 65],
-    tx_num: usize,
-) -> Result<(), ()> {
+) -> Result<crypto::k256::EncodedPoint, ()> {
     use crypto::k256::{
         ecdsa::{hazmat::bits2field, RecoveryId, Signature},
         elliptic_curve::ops::Reduce,
         Scalar,
     };
 
-    uart_log::write_str("[ecrecover_inner] TX#");
-    uart_log::write_usize(tx_num);
-    uart_log::write_str(" creating signature from r,s");
-    uart_log::newline();
-
-    let signature = Signature::from_scalars(*r, *s).map_err(|_| {
-        uart_log::write_str("[ecrecover_inner] TX#");
-        uart_log::write_usize(tx_num);
-        uart_log::write_str(" ERROR: from_scalars failed");
-        uart_log::newline();
-    })?;
-
-    let recovery_id = RecoveryId::try_from(rec_id).map_err(|_| {
-        uart_log::write_str("[ecrecover_inner] TX#");
-        uart_log::write_usize(tx_num);
-        uart_log::write_str(" ERROR: invalid recovery_id");
-        uart_log::newline();
-    })?;
-
-    uart_log::write_str("[ecrecover_inner] TX#");
-    uart_log::write_usize(tx_num);
-    uart_log::write_str(" computing message scalar from digest");
-    uart_log::newline();
+    let signature = Signature::from_scalars(*r, *s).map_err(|_| ())?;
+    let recovery_id = RecoveryId::try_from(rec_id).map_err(|_| ())?;
 
     let message = <Scalar as Reduce<crypto::k256::U256>>::reduce_bytes(
-        &bits2field::<crypto::k256::Secp256k1>(digest).map_err(|_| {
-            uart_log::write_str("[ecrecover_inner] TX#");
-            uart_log::write_usize(tx_num);
-            uart_log::write_str(" ERROR: bits2field failed");
-            uart_log::newline();
-        })?,
+        &bits2field::<crypto::k256::Secp256k1>(digest).map_err(|_| ())?,
     );
 
-    // Log the message scalar bytes
-    let msg_bytes = message.to_bytes();
-    uart_log::write_str("[ecrecover_inner] TX#");
-    uart_log::write_usize(tx_num);
-    uart_log::write_str(" message_scalar=");
-    uart_log::write_hex_slice(msg_bytes.as_slice());
-    uart_log::newline();
-
-    uart_log::write_str("[ecrecover_inner] TX#");
-    uart_log::write_usize(tx_num);
-    uart_log::write_str(" calling crypto::secp256k1::recover");
-    uart_log::newline();
-
-    let Ok(pk) = crypto::secp256k1::recover_with_logging(&message, &signature, &recovery_id, tx_num) else {
-        uart_log::write_str("[ecrecover_inner] TX#");
-        uart_log::write_usize(tx_num);
-        uart_log::write_str(" ERROR: recover failed");
-        uart_log::newline();
+    let Ok(pk) = crypto::secp256k1::recover(&message, &signature, &recovery_id) else {
         return Err(());
     };
 
-    uart_log::write_str("[ecrecover_inner] TX#");
-    uart_log::write_usize(tx_num);
-    uart_log::write_str(" calling pk.write_uncompressed_bytes_with_logging");
-    uart_log::newline();
+    // represent as bytes, and we do not need compression
+    let encoded = pk.to_encoded_point(false);
 
-    // Use write_uncompressed_bytes which writes directly to the output buffer
-    // using volatile operations to avoid compiler optimization issues on RISC-V
-    pk.write_uncompressed_bytes_with_logging(out, tx_num);
+    Ok(encoded)
+}
 
-    // Log what was written
-    uart_log::write_str("[ecrecover_inner] TX#");
-    uart_log::write_usize(tx_num);
-    uart_log::write_str(" after write, out[0]=");
-    uart_log::write_hex_byte(out[0]);
-    uart_log::newline();
+#[cfg(target_arch = "riscv32")]
+fn ecrecover_as_system_function_inner_with_oracle<
+    S: ?Sized + MinimalByteAddressableSlice,
+    D: ?Sized + Extend<u8>,
+    R: Resources,
+    O: zk_ee::system_io_oracle::IOOracle,
+    L: zk_ee::system::logger::Logger,
+>(
+    src: &S,
+    dst: &mut D,
+    resources: &mut R,
+    oracle: &mut O,
+    logger: &mut L,
+) -> Result<(), SystemError> {
+    resources.charge(&R::from_ergs_and_native(
+        ECRECOVER_COST_ERGS,
+        R::Native::from_computational(ECRECOVER_NATIVE_COST),
+    ))?;
+    // digest, v, r, s in ABI
+    let mut buffer = [0u8; 128];
+    for (dst, src) in buffer.iter_mut().zip(src.iter()) {
+        *dst = *src;
+    }
 
-    uart_log::write_str("[ecrecover_inner] TX#");
-    uart_log::write_usize(tx_num);
-    uart_log::write_str(" after write, out[1..9]=");
-    uart_log::write_hex_slice(&out[1..9]);
-    uart_log::newline();
+    // follow https://github.com/ethereum/go-ethereum/blob/aadcb886753079d419f966a3bc990f708f8d1c3b/core/vm/contracts.go#L188
+
+    let mut it = buffer.as_chunks::<32>().0.iter();
+    let recovered_pubkey_bytes = unsafe {
+        let digest = it.next().unwrap_unchecked();
+        let v = it.next().unwrap_unchecked();
+        let r = it.next().unwrap_unchecked();
+        let s = it.next().unwrap_unchecked();
+
+        if v[..31].iter().all(|el| *el == 0) == false {
+            return Ok(());
+        }
+
+        let rec_id = v[31].wrapping_sub(27);
+        if (rec_id == 0 || rec_id == 1) == false {
+            return Ok(());
+        }
+
+        let Ok(pk_bytes) = ecrecover_inner_with_oracle(digest, r, s, rec_id, oracle, logger) else {
+            return Ok(());
+        };
+
+        pk_bytes
+    };
+    let bytes_ref = recovered_pubkey_bytes.as_ref();
+
+    use crypto::sha3::Keccak256;
+    use crypto::MiniDigest;
+    let address_hash = Keccak256::digest(&bytes_ref[1..]);
+
+    dst.extend(core::iter::repeat_n(0, 12).chain(address_hash.into_iter().skip(12)));
 
     Ok(())
+}
+
+#[cfg(target_arch = "riscv32")]
+pub fn ecrecover_inner_with_oracle<
+    O: zk_ee::system_io_oracle::IOOracle,
+    L: zk_ee::system::logger::Logger,
+>(
+    digest: &[u8; 32],
+    r: &[u8; 32],
+    s: &[u8; 32],
+    rec_id: u8,
+    oracle: &mut O,
+    _logger: &mut L,
+) -> Result<crypto::k256::EncodedPoint, ()> {
+    use crate::system_functions::{FieldHintOp, FieldOpsHint, FIELD_OPS_ADVISE_QUERY_ID};
+    use crypto::k256::{
+        ecdsa::{hazmat::bits2field, RecoveryId, Signature},
+        elliptic_curve::ops::Reduce,
+        Scalar as K256Scalar,
+    };
+    use crypto::secp256k1::{ecmult, Affine, FieldElement, Scalar, ECRECOVER_CONTEXT};
+    use zk_ee::utils::Bytes32;
+
+    let signature = Signature::from_scalars(*r, *s).map_err(|_| ())?;
+    let recovery_id = RecoveryId::try_from(rec_id).map_err(|_| ())?;
+
+    let message = <K256Scalar as Reduce<crypto::k256::U256>>::reduce_bytes(
+        &bits2field::<crypto::k256::Secp256k1>(digest).map_err(|_| ())?,
+    );
+
+    let (sigr, mut sigs) = Scalar::from_signature(&signature);
+    let message = Scalar::from_k256_scalar(message);
+
+    // We go through bytes because it's mod GROUP_ORDER and later we need mod BASE FIELD
+    // NOTE: parsing signature above checks that we are already < GROUP ORDER
+    let mut brx = sigr.to_repr();
+
+    if recovery_id.is_x_reduced() {
+        use crypto::k256::elliptic_curve::bigint::CheckedAdd;
+        use crypto::k256::elliptic_curve::{Curve, FieldBytesEncoding};
+        match <crypto::k256::U256 as FieldBytesEncoding<crypto::k256::Secp256k1>>::decode_field_bytes(&brx)
+            .checked_add(&crypto::k256::Secp256k1::ORDER)
+            .into_option()
+        {
+            Some(restored) => {
+                brx = <crypto::k256::U256 as FieldBytesEncoding<crypto::k256::Secp256k1>>::encode_field_bytes(&restored);
+            }
+            None => return Err(()),
+        }
+    }
+
+    let is_y_odd = recovery_id.is_y_odd();
+
+    // Here we can use hint to get square root. As -1 is non-residue, then either value has square root, or it's negation
+
+    let x = {
+        let x_bytes: [u8; 32] = brx.into();
+        let Some(x) = FieldElement::from_bytes(&x_bytes) else {
+            return Err(());
+        };
+
+        // actually recover
+        let mut rhs = x;
+        rhs.square_in_place();
+        rhs *= x;
+        rhs += 7;
+
+        let mut y = if rhs.normalizes_to_zero() {
+            FieldElement::ZERO
+        } else {
+            // now we can ask for a hint
+            let input = Bytes32::from_array(rhs.to_bytes().try_into().unwrap());
+            let (square_root, should_negate): (Bytes32, bool) = {
+                let hint_request = FieldOpsHint {
+                    op: FieldHintOp::Secp256k1BaseFieldSqrt as u32,
+                    src_ptr: input.as_u8_array_ref().as_ptr().addr() as u32,
+                    src_len_u32_words: 8,
+                };
+                oracle
+                    .query_serializable(
+                        FIELD_OPS_ADVISE_QUERY_ID,
+                        &((&hint_request as *const FieldOpsHint).addr() as u32),
+                    )
+                    .map_err(|_| ())?
+            };
+            // answer is must be a field element
+            let Some(fe) = FieldElement::from_bytes(square_root.as_u8_array_ref()) else {
+                return Err(());
+            };
+
+            if should_negate == false {
+                let mut squared = fe;
+                squared.square_in_place();
+                squared.sub_in_place(&rhs);
+                assert!(squared.normalizes_to_zero());
+            } else {
+                // we must check that hint was correct
+                let mut squared = fe;
+                squared.square_in_place();
+                squared.add_in_place(&rhs);
+                assert!(squared.normalizes_to_zero());
+
+                return Err(());
+            }
+
+            fe
+        };
+
+        if y.is_odd() != is_y_odd {
+            y.negate_in_place(1);
+        }
+
+        // SAFETY: we recovered coordinates in a checked manner
+        let x = unsafe { Affine::from_xy_unchecked(x, y) };
+
+        x
+    };
+
+    let xj = x.to_jacobian();
+
+    // now we also need to invert r mod scalar field,
+    // and we already checked that sigr is not zero,
+    // so inverse must always exist
+
+    // This case is unreachable if we were able to decompress the point,
+    // but easier to check again
+    if sigr.is_zero() {
+        return Err(());
+    }
+
+    let mut sigr_inv: Scalar = {
+        // now we can ask for a hint
+        let input = Bytes32::from_array(sigr.to_repr().try_into().unwrap());
+        let inverse: Bytes32 = {
+            let hint_request = FieldOpsHint {
+                op: FieldHintOp::Secp256k1ScalarFieldInverse as u32,
+                src_ptr: input.as_u8_array_ref().as_ptr().addr() as u32,
+                src_len_u32_words: 8,
+            };
+            oracle
+                .query_serializable(
+                    FIELD_OPS_ADVISE_QUERY_ID,
+                    &((&hint_request as *const FieldOpsHint).addr() as u32),
+                )
+                .map_err(|_| ())?
+        };
+        // answer is must be a field element
+        use crypto::rust_k256::elliptic_curve::scalar::FromUintUnchecked;
+        use crypto::rust_k256::elliptic_curve::Curve;
+        use crypto::rust_k256::U256;
+
+        let inverse = U256::from_be_slice(inverse.as_u8_array_ref());
+        assert!(inverse < crypto::rust_k256::Secp256k1::ORDER);
+        let inverse: Scalar =
+            Scalar::from_k256_scalar(crypto::rust_k256::Scalar::from_uint_unchecked(inverse));
+        let mut t = sigr;
+        t *= &inverse;
+        t = t - Scalar::ONE;
+        assert!(t.is_zero());
+
+        inverse
+    };
+
+    sigs *= sigr_inv;
+
+    sigr_inv *= message;
+    sigr_inv.negate_in_place();
+
+    let pk_jacobian = ecmult(&xj, &sigs, &sigr_inv, &ECRECOVER_CONTEXT);
+    if pk_jacobian.z().normalizes_to_zero() {
+        // point of infinity, so we can bail
+        return Err(());
+    }
+
+    // now we can use a hint to get inverse again
+
+    let pk: Affine = {
+        let z_inv = {
+            // now we can ask for a hint
+            let input = Bytes32::from_array(pk_jacobian.z().to_bytes().try_into().unwrap());
+            let z_inv: Bytes32 = {
+                let hint_request = FieldOpsHint {
+                    op: FieldHintOp::Secp256k1BaseFieldInverse as u32,
+                    src_ptr: input.as_u8_array_ref().as_ptr().addr() as u32,
+                    src_len_u32_words: 8,
+                };
+                oracle
+                    .query_serializable(
+                        FIELD_OPS_ADVISE_QUERY_ID,
+                        &((&hint_request as *const FieldOpsHint).addr() as u32),
+                    )
+                    .map_err(|_| ())?
+            };
+
+            // answer is must be a field element
+            let Some(z_inv) = FieldElement::from_bytes(z_inv.as_u8_array_ref()) else {
+                return Err(());
+            };
+
+            z_inv
+        };
+
+        let mut x = z_inv;
+        let mut y = z_inv;
+
+        x.square_in_place();
+        y *= x;
+
+        x *= pk_jacobian.x();
+        y *= pk_jacobian.y();
+
+        let pk = unsafe { Affine::from_xy_unchecked(x, y) };
+
+        pk
+    };
+
+    // represent as bytes, and we do not need compression
+    let encoded = pk.to_encoded_point(false);
+
+    Ok(encoded)
 }
 
 #[cfg(test)]
@@ -471,7 +477,10 @@ mod test {
         ecrecover_as_system_function_inner(input.as_slice(), &mut pubkey, &mut resources)
             .expect("ecrecover");
         assert_eq!(pubkey.len(), 32, "Size should be 32");
-        assert_eq!(pubkey, expected_pubkey, "pubkey should be equal to reference")
+        assert_eq!(
+            pubkey, expected_pubkey,
+            "pubkey should be equal to reference"
+        )
     }
 
     #[test]
@@ -542,6 +551,9 @@ mod test {
         ecrecover_as_system_function_inner(input.as_slice(), &mut pubkey, &mut resources)
             .expect("ecrecover");
         assert_eq!(pubkey.len(), 32, "Size should be 32");
-        assert_eq!(pubkey, expected_pubkey, "pubkey should be equal to reference")
+        assert_eq!(
+            pubkey, expected_pubkey,
+            "pubkey should be equal to reference"
+        )
     }
 }

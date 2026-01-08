@@ -1,47 +1,66 @@
 [package]
 name = "eth_runner"
-version = "0.1.0"
-edition = "2021"
-authors = ["The Matter Labs Team <hello@matterlabs.dev>"]
-homepage = "https://zksync.io/"
-repository = "https://github.com/matter-labs/zksync-os/"
-license = "MIT OR Apache-2.0"
-keywords = ["blockchain", "zksync", "zk", "risc-v"]
-categories = ["cryptography"]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
-alloy = { version = "1", features = ["full"]}
-alloy-rpc-types-eth = { version = "*", features = ["serde"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-rig = { path = "../../rig", features = ["eth_runner"]}
+rig = { path = "../../rig" }
 zk_ee = { path = "../../../zk_ee" }
 basic_system = { path = "../../../basic_system" }
-system_hooks = {path = "../../../system_hooks" }
+forward_system = { path = "../../../forward_system" }
+system_hooks = { path = "../../../system_hooks" }
+zksync_os_runner = { path = "../../../zksync_os_runner" }
+
+serde = { workspace = true, features = ["derive"] }
+ruint = { workspace = true, default-features = false }
+
+alloy = { version = "1", features = ["rlp", "full", "ssz", "eips"] }
+alloy-primitives = { version = "1", features = ["arbitrary"] }
+alloy-rpc-types-eth = { version = "*", features = ["serde"] }
+alloy-rpc-types-debug = { version = "*", default-features = false }
+alloy-rlp = { version = "*" }
+
+serde_json = "1.0"
 clap = { version = "4.4", features = ["derive"] }
 anyhow = "=1.0.89"
-ruint = { version = "1.12.3", default-features = false, features = ["alloc"] }
 hex = "*"
 ureq = { version = "2", features = ["json"] }
 sled = {version = "0.34" }
 bincode = { version = "2", features = ["serde"] }
 serde_with = "3.13.0"
 csv = "1.3"
+base64 = "0.21.7"
+crossbeam = "0.8"
+flate2 = "1"
+
+risc_v_simulator = { git = "https://github.com/matter-labs/zksync-airbender", branch = "dev", features = ["delegation"], optional = true }
+execution_utils = { git = "https://github.com/matter-labs/zksync-airbender", branch = "dev", default-features = false, optional = true }
+
+[dev-dependencies]
+# execution_utils = { git = "https://github.com/matter-labs/zksync-airbender", branch = "dev", default-features = false, features = ["prover", "verifier_80"] }
+execution_utils = { git = "https://github.com/matter-labs/zksync-airbender", branch = "dev", default-features = false, features = ["prover"] }
+risc_v_simulator = { git = "https://github.com/matter-labs/zksync-airbender", branch = "dev", features = ["delegation"] }
 
 [features]
 simulate_witness_gen = ["rig/simulate_witness_gen"]
-default = []
+# default = []
+# default = ["evm_replay"]
+# default = ["evm_replay", "pectra"]
+# default = ["evm_replay", "pectra", "with_gpu_prover"]  # Requires GPU prover setup
+default = ["evm_replay", "pectra"]  # For cycle benchmarking without GPU prover
+# default = ["evm_replay", "pectra", "debug_satisfiable", "precheck_satisfied"]
+risc_v_logs = []
+evm_replay = ["rig/prevrandao", "rig/unlimited_native", "rig/disable_system_contracts", "rig/evm_refunds", "rig/evm-compatibility"]
+pectra = ["rig/pectra"]
+# Enables create proofs using GPU.
+with_gpu_prover = ["execution_utils", "execution_utils/prover", "execution_utils/gpu_prover", "risc_v_simulator"]
 
-[patch."https://github.com/matter-labs/zksync-airbender"]
-# Use local blake2s_u32 with riscv64 CSR delegation support
-blake2s_u32 = { path = "../../../zksync_os/zksync-airbender/blake2s_u32" }
-# Use local risc_v_simulator with PC tracking for oracle queries
-risc_v_simulator = { path = "../../../zksync_os/zksync-airbender/risc_v_simulator" }
-# Patch related crates to avoid version conflicts
-cs = { path = "../../../zksync_os/zksync-airbender/cs" }
-field = { path = "../../../zksync_os/zksync-airbender/field" }
-poseidon2 = { path = "../../../zksync_os/zksync-airbender/poseidon2" }
-non_determinism_source = { path = "../../../zksync_os/zksync-airbender/non_determinism_source" }
-prover = { path = "../../../zksync_os/zksync-airbender/prover" }
-prover_examples = { path = "../../../zksync_os/zksync-airbender/circuit_defs/prover_examples" }
-execution_utils = { path = "../../../zksync_os/zksync-airbender/execution_utils" }
+debug_satisfiable = ["execution_utils/debug_satisfiable"]
+# Will perform satisfiability tests on witness
+precheck_satisfied = ["execution_utils/precheck_satisfied"]

@@ -1,6 +1,6 @@
 use super::location::ErrorLocation;
 
-#[cfg_attr(any(target_arch = "riscv32", target_arch = "riscv64"), derive(Copy))]
+#[cfg_attr(target_arch = "riscv32", derive(Copy))]
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Metadata {
     pub location: ErrorLocation,

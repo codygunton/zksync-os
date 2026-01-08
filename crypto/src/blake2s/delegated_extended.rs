@@ -159,11 +159,5 @@ unsafe fn spec_memcopy(
         src.len(),
     );
     core::hint::assert_unchecked(src.len() == dst.len());
-    // WORKAROUND: Use volatile reads and writes to prevent compiler optimization
-    // issues on RV64 (ZisK). Direct copy_from_slice can produce corrupted data
-    // when src is from certain memory regions. See ai_plans/riscv-compiler-bugs.md.
-    for i in 0..src.len() {
-        let byte = core::ptr::read_volatile(&src[i]);
-        core::ptr::write_volatile(&mut dst[i], byte);
-    }
+    dst.copy_from_slice(src);
 }

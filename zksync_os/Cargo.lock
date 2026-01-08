@@ -180,7 +180,7 @@ version = "0.1.0"
 dependencies = [
  "arrayvec",
  "basic_system",
- "cfg-if",
+ "const-hex",
  "crypto",
  "cycle_marker",
  "evm_interpreter",
@@ -196,8 +196,8 @@ name = "basic_system"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
+ "cc-traits",
  "cfg-if",
- "const-hex",
  "const_for",
  "crypto",
  "cycle_marker",
@@ -206,8 +206,10 @@ dependencies = [
  "modexp",
  "paste",
  "ruint",
+ "serde",
  "storage_models",
  "strum_macros",
+ "system_hooks",
  "zk_ee",
 ]
 
@@ -230,6 +232,7 @@ dependencies = [
 name = "blake2s_u32"
 version = "0.1.0"
 dependencies = [
+ "common_constants",
  "unroll",
 ]
 
@@ -250,15 +253,17 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "cc-traits"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "060303ef31ef4a522737e1b1ab68c67916f2a787bb2f4f54f383279adba962b5"
+version = "0.1.0"
 
 [[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+
+[[package]]
+name = "common_constants"
+version = "0.1.0"
 
 [[package]]
 name = "const-hex"
@@ -311,6 +316,7 @@ dependencies = [
  "blake2",
  "blake2s_u32",
  "cfg-if",
+ "common_constants",
  "const_for",
  "educe",
  "itertools 0.14.0",
@@ -320,6 +326,7 @@ dependencies = [
  "p256",
  "ripemd",
  "ruint",
+ "seq-macro",
  "sha2",
  "sha3",
  "zeroize",
@@ -460,7 +467,6 @@ dependencies = [
  "ruint",
  "strum_macros",
  "zk_ee",
- "zksync_os_evm_errors",
 ]
 
 [[package]]
@@ -721,12 +727,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "r0"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd7a31eed1591dcbc95d92ad7161908e72f4677f8fabf2a32ca49b4237cbf211"
-
-[[package]]
 name = "rand"
 version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -818,6 +818,9 @@ dependencies = [
 [[package]]
 name = "riscv_common"
 version = "0.1.0"
+dependencies = [
+ "common_constants",
+]
 
 [[package]]
 name = "ruint"
@@ -858,6 +861,25 @@ name = "seq-macro"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1bc711410fbe7399f390ca1c3b60ad0f53f80e95c5eb935e52268a0e2cd49acc"
+
+[[package]]
+name = "serde"
+version = "1.0.228"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
+dependencies = [
+ "serde_core",
+ "serde_derive",
+]
+
+[[package]]
+name = "serde-big-array"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11fc7cc2c76d73e0f27ee52abbd64eec84d46f370c88371120433196934e4b7f"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "serde_core"
@@ -969,6 +991,7 @@ name = "system_hooks"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
+ "crypto",
  "cycle_marker",
  "evm_interpreter",
  "paste",
@@ -1069,13 +1092,15 @@ version = "0.1.0"
 dependencies = [
  "arrayvec",
  "bitflags",
+ "cc-traits",
  "cfg-if",
  "crypto",
  "cycle_marker",
  "paste",
  "ruint",
+ "serde",
+ "serde-big-array",
  "strum_macros",
- "zksync_os_evm_errors",
 ]
 
 [[package]]
@@ -1085,13 +1110,6 @@ dependencies = [
  "crypto",
  "heapless",
  "proof_running_system",
- "r0",
  "riscv",
  "riscv_common",
 ]
-
-[[package]]
-name = "zksync_os_evm_errors"
-version = "0.0.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b3ad55a8aa3498e304565de55b61dc930bac227c8c5e81284b623c69f2143d2"

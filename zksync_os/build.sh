@@ -104,8 +104,9 @@ case "$MACHINE" in
 esac
 
 # Features for the build (can be overridden via environment variable)
-FEATURES="${FEATURES:-proving,eth_runner}"
-echo "priving with FEATURES=$FEATURES"
+# Default features for EVM replay: proving + unlimited_native + disable_system_contracts + prevrandao + evm_refunds
+FEATURES="${FEATURES:-proving,unlimited_native,disable_system_contracts,prevrandao,evm_refunds}"
+echo "Building with FEATURES=$FEATURES"
 # Build output file names
 if $DEBUG; then
     SUFFIX="${MACHINE}_debug"
