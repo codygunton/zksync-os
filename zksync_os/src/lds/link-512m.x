@@ -68,6 +68,7 @@ SECTIONS
     *(.trap.rust);
 
     *(.text .text.*);
+    _rom_size = .;
   } > REGION_TEXT AT > REGION_TEXT :text
 
   /* fictitious region that represents the memory available for the stack */

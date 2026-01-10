@@ -9,9 +9,9 @@ use ark_ec::{
 };
 use ark_ff::{AdditiveGroup, One, PrimeField, Zero};
 
-#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"), test))]
 use crate::ark_ff_delegation::{BigIntMacro as BigInt, MontFp};
-#[cfg(not(any(all(target_arch = "riscv32", feature = "bigint_ops"), test)))]
+#[cfg(not(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"), test)))]
 use ark_ff::{BigInt, MontFp};
 use ark_serialize::{Compress, SerializationError};
 use core::ops::Neg;

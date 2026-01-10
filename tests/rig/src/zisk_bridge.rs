@@ -19,7 +19,7 @@
 //!
 //! This bridge tracks state to handle the length specially.
 
-use oracle_provider::{MemorySource, ZkEENonDeterminismSource};
+use oracle_provider::{MemorySource, U32Memory, ZkEENonDeterminismSource};
 use risc_v_simulator::abstractions::memory::AccessType;
 use risc_v_simulator::abstractions::non_determinism::NonDeterminismCSRSource;
 use risc_v_simulator::cycle::status_registers::TrapReason;
@@ -47,7 +47,7 @@ fn verbose_bridge() -> bool {
 
 /// Memory source that wraps a ZiskMemoryReader pointer.
 ///
-/// This adapter implements the `MemorySource` trait required by the oracle
+/// This adapter implements the `U32Memory` trait required by the oracle
 /// by forwarding memory reads to the Zisk emulator's memory via the
 /// `ZiskMemoryReader` trait.
 ///
@@ -95,6 +95,16 @@ impl ZiskMemorySource {
     }
 }
 
+impl U32Memory for ZiskMemorySource {
+    fn read_word(&self, address: u32) -> u32 {
+        // Safety: reader pointer is set before oracle calls and valid for duration
+        let reader_opt = unsafe { *self.reader.get() };
+        let reader_ptr = reader_opt.expect("ZiskMemorySource::read_word() called without memory reader set!");
+        let reader = unsafe { &*reader_ptr };
+        reader.read_mem(address as u64, 4) as u32
+    }
+}
+
 impl MemorySource for ZiskMemorySource {
     fn get(
         &self,
@@ -133,7 +143,7 @@ impl MemorySource for ZiskMemorySource {
 /// This bridge MUST only be used from a single thread. The `Send` impl is only
 /// safe because witness generation runs on a single thread.
 pub struct ZiskOracleBridge {
-    oracle: UnsafeCell<ZkEENonDeterminismSource<ZiskMemorySource>>,
+    oracle: UnsafeCell<ZkEENonDeterminismSource>,
     /// Shared memory source used by the oracle. Must be set before each write.
     memory_source: Arc<ZiskMemorySource>,
     witness: Arc<Mutex<Vec<u32>>>,
@@ -155,7 +165,7 @@ impl ZiskOracleBridge {
     ///
     /// The oracle must have been created with a `ZiskMemorySource` that will
     /// be used for memory access during query processing.
-    pub fn new(oracle: ZkEENonDeterminismSource<ZiskMemorySource>, memory_source: Arc<ZiskMemorySource>) -> Self {
+    pub fn new(oracle: ZkEENonDeterminismSource, memory_source: Arc<ZiskMemorySource>) -> Self {
         Self {
             oracle: UnsafeCell::new(oracle),
             memory_source,
@@ -179,7 +189,8 @@ impl ZiskOracleBridge {
     pub fn read(&self) -> u32 {
         // Safety: single-threaded access guaranteed by caller
         let oracle = unsafe { &mut *self.oracle.get() };
-        let value = oracle.read();
+        // Use the NonDeterminismCSRSource trait method
+        let value = <ZkEENonDeterminismSource as NonDeterminismCSRSource<ZiskMemorySource>>::read(oracle);
         self.witness.lock().expect("witness lock poisoned").push(value);
         let count = ORACLE_OP_COUNT.fetch_add(1, Ordering::Relaxed);
         // Log every 100000 operations to track progress (suppressed by ZISK_QUIET=1)
@@ -220,8 +231,12 @@ impl ZiskOracleBridge {
             self.memory_source.set_reader(reader_ptr_static);
         }
 
-        // Call the oracle with our memory source
-        oracle.write_with_memory_access(&*self.memory_source, value);
+        // Call the oracle with our memory source through the trait
+        <ZkEENonDeterminismSource as NonDeterminismCSRSource<ZiskMemorySource>>::write_with_memory_access(
+            oracle,
+            &*self.memory_source,
+            value,
+        );
 
         // Clear the pointer after use
         self.memory_source.clear_reader();
@@ -245,7 +260,7 @@ impl ZiskOracleBridge {
             // Track the raw u32 count internally for our read counting
             self.remaining_u32s.store(length as u32, Ordering::SeqCst);
             if verbose_bridge() {
-                let query_num = QUERY_OP_COUNT.load(Ordering::Relaxed);
+                let _query_num = QUERY_OP_COUNT.load(Ordering::Relaxed);
                 // eprintln!(
                 //     "[bridge] query={} read_u64 LENGTH: {} (will track {} u32 reads)",
                 //     query_num, length, length
@@ -265,7 +280,7 @@ impl ZiskOracleBridge {
             }
             if verbose_bridge() && remaining_before <= 8 {
                 // Log last few data reads to see values at end of response
-                let query_num = QUERY_OP_COUNT.load(Ordering::Relaxed);
+                let _query_num = QUERY_OP_COUNT.load(Ordering::Relaxed);
                 // eprintln!(
                 //     "[bridge] query={} read_u64 DATA: remaining {} -> {}, value=0x{:08x}",
                 //     query_num, remaining_before, new_remaining, value
@@ -357,7 +372,7 @@ mod tests {
         // Create a shared memory source
         let memory_source = Arc::new(ZiskMemorySource::new_empty());
         // Create an empty oracle (will panic on actual use, but we can test the structure)
-        let oracle: ZkEENonDeterminismSource<ZiskMemorySource> = ZkEENonDeterminismSource::default();
+        let oracle = ZkEENonDeterminismSource::default();
         let bridge = ZiskOracleBridge::new(oracle, memory_source);
 
         let witness_ref = bridge.get_witness();

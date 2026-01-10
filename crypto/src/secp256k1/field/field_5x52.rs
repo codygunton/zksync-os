@@ -531,6 +531,7 @@ pub(super) struct FieldStorage5x52([u64; 4]);
 impl FieldStorage5x52 {
     pub(super) const DEFAULT: Self = Self([0; 4]);
 
+    #[cfg(not(all(target_arch = "riscv64", feature = "bigint_ops")))]
     #[inline(always)]
     pub(super) const fn to_field_elem(self) -> FieldElement5x52 {
         FieldElement5x52([
@@ -540,6 +541,24 @@ impl FieldStorage5x52 {
             self.0[2] >> 28 | ((self.0[3] << 36) & 0xFFFFFFFFFFFFF),
             self.0[3] >> 16,
         ])
+    }
+
+    // Delegation conversion: returns FieldElement8x32 when using bigint_ops on riscv64
+    // Uses volatile reads to prevent RISC-V LLVM optimization bugs that corrupt data
+    #[cfg(all(target_arch = "riscv64", feature = "bigint_ops"))]
+    #[inline(never)]
+    pub(super) fn to_field_elem(self) -> super::field_8x32::FieldElement8x32 {
+        // FieldStorage5x52 holds the value as 4 x u64
+        // FieldElement8x32 expects 4 x u64 (BigInt<4>)
+        // Use volatile reads to prevent compiler optimization bugs
+        unsafe {
+            let w0 = core::ptr::read_volatile(&self.0[0]);
+            let w1 = core::ptr::read_volatile(&self.0[1]);
+            let w2 = core::ptr::read_volatile(&self.0[2]);
+            let w3 = core::ptr::read_volatile(&self.0[3]);
+            use crate::ark_ff_delegation::BigInt;
+            super::field_8x32::FieldElement8x32(BigInt([w0, w1, w2, w3]))
+        }
     }
 }
 

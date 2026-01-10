@@ -183,6 +183,21 @@ enum Command {
         #[arg(long)]
         cont: bool,
     },
+    /// Dump block data from RPC endpoint (including witness.json)
+    DumpBlock {
+        /// Block number to dump
+        #[arg(long)]
+        block_number: u64,
+        /// RPC endpoint (Reth with debug APIs)
+        #[arg(long)]
+        endpoint: String,
+        /// Beacon chain endpoint (optional, for blobs)
+        #[arg(long)]
+        beacon_endpoint: Option<String>,
+        /// Output directory for block data
+        #[arg(long)]
+        output_dir: String,
+    },
 }
 
 fn init_logger() {
@@ -312,6 +327,21 @@ fn main() -> anyhow::Result<()> {
                 .unwrap();
             }
             Ok(())
+        }
+        Command::DumpBlock {
+            block_number,
+            endpoint,
+            beacon_endpoint,
+            output_dir,
+        } => {
+            std::fs::create_dir_all(&output_dir)?;
+            crate::dump_utils::dump_eth_block(
+                block_number,
+                &endpoint,
+                None,
+                beacon_endpoint.as_deref().unwrap_or(""),
+                output_dir,
+            )
         }
     }
 }

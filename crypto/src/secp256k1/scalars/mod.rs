@@ -5,19 +5,30 @@ use cfg_if::cfg_if;
 
 mod invert;
 
-#[cfg(all(target_pointer_width = "64", not(feature = "bigint_ops")))]
+// scalar64: pure Rust 64-bit implementation, used on 64-bit platforms without bigint_ops
+#[cfg(target_pointer_width = "64")]
 mod scalar64;
 
 #[cfg(all(target_pointer_width = "32", not(feature = "bigint_ops")))]
 mod scalar32;
 
-#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+// scalar32_delegation: used on riscv32/riscv64 with bigint_ops
+#[cfg(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    test,
+    all(feature = "proving", fuzzing)
+))]
 pub(crate) mod scalar32_delegation;
-#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+#[cfg(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    test,
+    all(feature = "proving", fuzzing)
+))]
 pub use scalar32_delegation::init;
 
 cfg_if! {
-    if #[cfg(feature = "bigint_ops")] {
+    // Use bigint_ops delegation on riscv32/riscv64
+    if #[cfg(all(feature = "bigint_ops", any(target_arch = "riscv32", target_arch = "riscv64")))] {
         use scalar32_delegation::ScalarInner;
     } else if #[cfg(target_pointer_width = "32")] {
         use scalar32::ScalarInner;
@@ -195,7 +206,7 @@ mod tests {
     use proptest::{prop_assert, prop_assert_eq, proptest};
 
     fn init() {
-        #[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+        #[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"), test))]
         super::scalar32_delegation::init();
     }
 

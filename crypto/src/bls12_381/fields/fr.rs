@@ -1,4 +1,4 @@
-#[cfg(all(target_arch = "riscv32", not(feature = "bigint_ops")))]
+#[cfg(all(any(target_arch = "riscv32", target_arch = "riscv64"), not(feature = "bigint_ops")))]
 compile_error!("feature `bigint_ops` must be activated for RISC-V target");
 
 use core::mem::MaybeUninit;
@@ -7,7 +7,7 @@ use crate::ark_ff_delegation::{BigInt, BigIntMacro, Fp, Fp256, MontBackend, Mont
 use crate::bigint_delegation::{u256, DelegatedModParams, DelegatedMontParams};
 use ark_ff::{AdditiveGroup, Zero};
 
-#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"), test))]
 pub fn init() {
     unsafe {
         MODULUS.as_mut_ptr().write(FrConfig::MODULUS);
@@ -83,6 +83,17 @@ impl MontConfig<4> for FrConfig {
         unsafe {
             u256::mul_assign_montgomery::<FrParams>(&mut a.0, &BigInt::one());
         }
+
+        // WORKAROUND: Force memory reads after CSR delegation
+        // The bigint CSR delegation has memory ordering issues where writes
+        // may not be immediately visible. We force reads of all limbs and
+        // use them in a way that the optimizer cannot eliminate.
+        let checksum = a.0.0[0]
+            .wrapping_add(a.0.0[1])
+            .wrapping_add(a.0.0[2])
+            .wrapping_add(a.0.0[3]);
+        core::hint::black_box(checksum);
+
         a.0
     }
 
@@ -91,6 +102,13 @@ impl MontConfig<4> for FrConfig {
         unsafe {
             u256::add_mod_assign::<FrParams>(&mut a.0, &b.0);
         }
+
+        // WORKAROUND: Force memory reads after CSR delegation
+        let checksum = a.0.0[0]
+            .wrapping_add(a.0.0[1])
+            .wrapping_add(a.0.0[2])
+            .wrapping_add(a.0.0[3]);
+        core::hint::black_box(checksum);
     }
 
     #[inline(always)]
@@ -98,6 +116,13 @@ impl MontConfig<4> for FrConfig {
         unsafe {
             u256::sub_mod_assign::<FrParams>(&mut a.0, &b.0);
         }
+
+        // WORKAROUND: Force memory reads after CSR delegation
+        let checksum = a.0.0[0]
+            .wrapping_add(a.0.0[1])
+            .wrapping_add(a.0.0[2])
+            .wrapping_add(a.0.0[3]);
+        core::hint::black_box(checksum);
     }
 
     #[inline(always)]
@@ -105,6 +130,13 @@ impl MontConfig<4> for FrConfig {
         unsafe {
             u256::double_mod_assign::<FrParams>(&mut a.0);
         }
+
+        // WORKAROUND: Force memory reads after CSR delegation
+        let checksum = a.0.0[0]
+            .wrapping_add(a.0.0[1])
+            .wrapping_add(a.0.0[2])
+            .wrapping_add(a.0.0[3]);
+        core::hint::black_box(checksum);
     }
 
     #[inline(always)]
@@ -112,6 +144,13 @@ impl MontConfig<4> for FrConfig {
         unsafe {
             u256::neg_mod_assign::<FrParams>(&mut a.0);
         }
+
+        // WORKAROUND: Force memory reads after CSR delegation
+        let checksum = a.0.0[0]
+            .wrapping_add(a.0.0[1])
+            .wrapping_add(a.0.0[2])
+            .wrapping_add(a.0.0[3]);
+        core::hint::black_box(checksum);
     }
 
     #[inline(always)]
@@ -119,6 +158,16 @@ impl MontConfig<4> for FrConfig {
         unsafe {
             u256::mul_assign_montgomery::<FrParams>(&mut a.0, &b.0);
         }
+
+        // WORKAROUND: Force memory reads after CSR delegation
+        // The bigint CSR delegation has memory ordering issues where writes
+        // may not be immediately visible. We force reads of all limbs and
+        // use them in a way that the optimizer cannot eliminate.
+        let checksum = a.0.0[0]
+            .wrapping_add(a.0.0[1])
+            .wrapping_add(a.0.0[2])
+            .wrapping_add(a.0.0[3]);
+        core::hint::black_box(checksum);
     }
 
     #[inline(always)]
@@ -126,6 +175,16 @@ impl MontConfig<4> for FrConfig {
         unsafe {
             u256::square_assign_montgomery::<FrParams>(&mut a.0);
         }
+
+        // WORKAROUND: Force memory reads after CSR delegation
+        // The bigint CSR delegation has memory ordering issues where writes
+        // may not be immediately visible. We force reads of all limbs and
+        // use them in a way that the optimizer cannot eliminate.
+        let checksum = a.0.0[0]
+            .wrapping_add(a.0.0[1])
+            .wrapping_add(a.0.0[2])
+            .wrapping_add(a.0.0[3]);
+        core::hint::black_box(checksum);
     }
 
     fn inverse(a: &Fr) -> Option<Fr> {

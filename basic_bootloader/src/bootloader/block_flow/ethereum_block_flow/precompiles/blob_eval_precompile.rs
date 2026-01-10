@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use core::fmt::Write;
 use crypto::ark_ec::pairing::Pairing;
 use crypto::ark_ec::AffineRepr;
-use crypto::ark_ff::{Field, PrimeField};
+use crypto::ark_ff::{BigInt, Field, PrimeField};
 use evm_interpreter::ERGS_PER_GAS;
 use system_hooks::make_error_return_state;
 use system_hooks::make_return_state_from_returndata_region;
@@ -73,7 +73,19 @@ impl BlobEvaluationPrecompile {
         S::IO: IOSubsystemExt,
     {
         use crypto::ark_serialize::CanonicalDeserialize;
-        let g2_by_tau_point = <crypto::bls12_381::curves::Bls12_381 as crypto::ark_ec::pairing::Pairing>::G2Affine::deserialize_compressed(&TRUSTED_SETUP_TAU_G2_BYTES[..]).expect("must decode from trusted setup");
+        use core::fmt::Write;
+        let _ = system.get_logger().write_str("[BLOB] Deserializing G2 point...\n");
+        let g2_result = <crypto::bls12_381::curves::Bls12_381 as crypto::ark_ec::pairing::Pairing>::G2Affine::deserialize_compressed(&TRUSTED_SETUP_TAU_G2_BYTES[..]);
+        let g2_by_tau_point = match g2_result {
+            Ok(p) => {
+                let _ = system.get_logger().write_str("[BLOB] G2 deserialization OK\n");
+                p
+            }
+            Err(e) => {
+                let _ = system.get_logger().write_fmt(format_args!("[BLOB] G2 deserialization FAILED: {:?}\n", e));
+                panic!("must decode from trusted setup: {:?}", e);
+            }
+        };
         let prepared_g2_generator = crypto::bls12_381::G2Affine::generator().into();
 
         let new = Self {
@@ -156,7 +168,7 @@ impl BlobEvaluationPrecompile {
                 for (dst, src) in repr.iter_mut().zip(input.as_rchunks::<8>().1.iter().rev()) {
                     *dst = u64::from_be_bytes(*src);
                 }
-                let repr = crypto::BigInt::new(repr);
+                let repr = <crypto::bls12_381::Fr as PrimeField>::BigInt::new(repr);
                 if repr >= crypto::bls12_381::Fr::MODULUS {
                     Err(())
                 } else {

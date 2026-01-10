@@ -42,7 +42,9 @@ fn init_marker_file() -> std::fs::File {
 
 #[allow(dead_code)]
 #[cfg(all(not(feature = "log_to_file"), not(any(target_arch = "riscv32", target_arch = "riscv64"))))]
-pub fn log_marker(_msg: &str) {}
+pub fn log_marker(msg: &str) {
+    println!("{}", msg);
+}
 
 #[cfg(all(feature = "log_to_file", not(any(target_arch = "riscv32", target_arch = "riscv64"))))]
 pub fn log_marker(msg: &str) {
@@ -51,6 +53,11 @@ pub fn log_marker(msg: &str) {
         writeln!(f.borrow_mut(), "{}", msg).unwrap();
     });
 }
+
+// No-op for riscv targets (logging not supported in no_std context)
+#[allow(dead_code)]
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+pub fn log_marker(_msg: &str) {}
 
 /// Start a marker. For RISC-V this will use a special CSR to
 /// let the simulator know that we need a new marker.

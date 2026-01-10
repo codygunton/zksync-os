@@ -1,4 +1,5 @@
 use super::*;
+use alloc::format;
 use crate::bootloader::errors::InvalidTransaction;
 use crate::bootloader::{transaction::ZkSyncTransaction, transaction_flow::BasicTransactionFlow};
 use crate::bootloader::{BasicBootloader, TxDataBuffer};
