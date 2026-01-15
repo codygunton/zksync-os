@@ -301,7 +301,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
         // Create emulator options
         let options = EmuOptions {
             verbose: false,
-            uart: "stderr".to_string(),
+            zksyncos_uart: "stderr".to_string(),
             log_metrics: true,
             ..Default::default()
         };

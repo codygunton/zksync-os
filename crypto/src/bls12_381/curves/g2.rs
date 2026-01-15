@@ -12,9 +12,15 @@ use ark_ec::{
 use ark_ff::{AdditiveGroup, Field, PrimeField, Zero};
 use ark_serialize::{Compress, SerializationError};
 
-#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"), test))]
+#[cfg(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    test
+))]
 use crate::ark_ff_delegation::{BigIntMacro as BigInt, MontFp};
-#[cfg(not(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"), test)))]
+#[cfg(not(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    test
+)))]
 use ark_ff::{BigInt, MontFp};
 
 use super::{
@@ -133,9 +139,9 @@ impl SWCurveConfig for Config {
         };
 
         if validate == ark_serialize::Validate::Yes {
-            // TEMPORARY: Skip subgroup check due to arithmetic issues
-            // The trusted setup point should be in the correct subgroup
-            // TODO: Fix the scalar multiplication / Frobenius endomorphism
+            if !p.is_zero() && !p.is_in_correct_subgroup_assuming_on_curve() {
+                return Err(ark_serialize::SerializationError::InvalidData);
+            }
         }
         Ok(p)
     }

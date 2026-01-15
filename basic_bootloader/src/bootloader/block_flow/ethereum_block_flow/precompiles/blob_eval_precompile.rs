@@ -73,25 +73,11 @@ impl BlobEvaluationPrecompile {
         S::IO: IOSubsystemExt,
     {
         use crypto::ark_serialize::CanonicalDeserialize;
-        use core::fmt::Write;
-        let _ = system.get_logger().write_str("[BLOB] Deserializing G2 point...\n");
-        let g2_result = <crypto::bls12_381::curves::Bls12_381 as crypto::ark_ec::pairing::Pairing>::G2Affine::deserialize_compressed(&TRUSTED_SETUP_TAU_G2_BYTES[..]);
-        let g2_by_tau_point = match g2_result {
-            Ok(p) => {
-                let _ = system.get_logger().write_str("[BLOB] G2 deserialization OK\n");
-                p
-            }
-            Err(e) => {
-                let _ = system.get_logger().write_fmt(format_args!("[BLOB] G2 deserialization FAILED: {:?}\n", e));
-                panic!("must decode from trusted setup: {:?}", e);
-            }
-        };
+        let g2_by_tau_point = <crypto::bls12_381::curves::Bls12_381 as crypto::ark_ec::pairing::Pairing>::G2Affine::deserialize_compressed(&TRUSTED_SETUP_TAU_G2_BYTES[..])
+            .expect("must decode from trusted setup");
         let prepared_g2_generator = crypto::bls12_381::G2Affine::generator().into();
 
-        let new = Self {
-            g2_by_tau_point,
-            prepared_g2_generator,
-        };
+        let new = Self { g2_by_tau_point, prepared_g2_generator };
 
         system_functions.add_hook(
             POINT_EVAL_HOOK_ADDRESS_LOW,
@@ -116,9 +102,9 @@ impl BlobEvaluationPrecompile {
             ))?;
 
             if input.len() != 192 {
-                return Err(PointEvaluationPrecompileSubsystemError::LeafUsage(
-                    interface_error!(PointEvaluationPrecompileInterfaceError::InvalidInputSize),
-                ));
+                return Err(PointEvaluationPrecompileSubsystemError::LeafUsage(interface_error!(
+                    PointEvaluationPrecompileInterfaceError::InvalidInputSize
+                )));
             }
 
             fn versioned_hash_for_kzg(data: &[u8]) -> [u8; 32] {
@@ -135,9 +121,9 @@ impl BlobEvaluationPrecompile {
 
             // so far it's just one version
             if versioned_hash_for_kzg(commitment) != versioned_hash {
-                return Err(PointEvaluationPrecompileSubsystemError::LeafUsage(
-                    interface_error!(PointEvaluationPrecompileInterfaceError::InvalidVersionedHash),
-                ));
+                return Err(PointEvaluationPrecompileSubsystemError::LeafUsage(interface_error!(
+                    PointEvaluationPrecompileInterfaceError::InvalidVersionedHash
+                )));
             }
 
             fn parse_g1_compressed(input: &[u8]) -> Result<crypto::bls12_381::G1Affine, ()> {
@@ -148,15 +134,15 @@ impl BlobEvaluationPrecompile {
 
             // Parse the commitment and proof
             let Ok(commitment_point) = parse_g1_compressed(commitment) else {
-                return Err(PointEvaluationPrecompileSubsystemError::LeafUsage(
-                    interface_error!(PointEvaluationPrecompileInterfaceError::InvalidPoint),
-                ));
+                return Err(PointEvaluationPrecompileSubsystemError::LeafUsage(interface_error!(
+                    PointEvaluationPrecompileInterfaceError::InvalidPoint
+                )));
             };
             let proof = &input[144..192];
             let Ok(proof) = parse_g1_compressed(proof) else {
-                return Err(PointEvaluationPrecompileSubsystemError::LeafUsage(
-                    interface_error!(PointEvaluationPrecompileInterfaceError::InvalidPoint),
-                ));
+                return Err(PointEvaluationPrecompileSubsystemError::LeafUsage(interface_error!(
+                    PointEvaluationPrecompileInterfaceError::InvalidPoint
+                )));
             };
 
             // We do not need internal representation, just canonical scalar
@@ -177,15 +163,15 @@ impl BlobEvaluationPrecompile {
             }
 
             let Ok(z) = parse_scalar(input[32..64].try_into().unwrap()) else {
-                return Err(PointEvaluationPrecompileSubsystemError::LeafUsage(
-                    interface_error!(PointEvaluationPrecompileInterfaceError::InvalidScalar),
-                ));
+                return Err(PointEvaluationPrecompileSubsystemError::LeafUsage(interface_error!(
+                    PointEvaluationPrecompileInterfaceError::InvalidScalar
+                )));
             };
 
             let Ok(y) = parse_scalar(input[64..96].try_into().unwrap()) else {
-                return Err(PointEvaluationPrecompileSubsystemError::LeafUsage(
-                    interface_error!(PointEvaluationPrecompileInterfaceError::InvalidScalar),
-                ));
+                return Err(PointEvaluationPrecompileSubsystemError::LeafUsage(interface_error!(
+                    PointEvaluationPrecompileInterfaceError::InvalidScalar
+                )));
             };
 
             // e(y - P, G₂) * e(proof, X - z) == 1
@@ -227,18 +213,10 @@ where
         system: &'_ mut System<S>,
         return_memory: &'a mut [core::mem::MaybeUninit<u8>],
     ) -> Result<
-        (
-            CompletedExecution<'a, S>,
-            &'a mut [core::mem::MaybeUninit<u8>],
-        ),
+        (CompletedExecution<'a, S>, &'a mut [core::mem::MaybeUninit<u8>]),
         zk_ee::system::errors::system::SystemError,
     > {
-        let ExternalCallRequest {
-            available_resources,
-            calldata,
-            modifier,
-            ..
-        } = request;
+        let ExternalCallRequest { available_resources, calldata, modifier, .. } = request;
 
         // We allow static calls as we are "pure" hook
         if modifier == CallModifier::Constructor {
@@ -253,10 +231,7 @@ where
         match result {
             Ok(()) => {
                 let (returndata, rest) = return_vec.destruct();
-                Ok((
-                    make_return_state_from_returndata_region(resources, returndata),
-                    rest,
-                ))
+                Ok((make_return_state_from_returndata_region(resources, returndata), rest))
             }
             Err(e) => match e.root_cause() {
                 RootCause::Runtime(RuntimeError::OutOfErgs(_))
@@ -288,10 +263,7 @@ where
         system: &'_ mut System<S>,
         return_memory: &'a mut [core::mem::MaybeUninit<u8>],
     ) -> Result<
-        (
-            CompletedExecution<'a, S>,
-            &'a mut [core::mem::MaybeUninit<u8>],
-        ),
+        (CompletedExecution<'a, S>, &'a mut [core::mem::MaybeUninit<u8>]),
         zk_ee::system::errors::system::SystemError,
     >
     where

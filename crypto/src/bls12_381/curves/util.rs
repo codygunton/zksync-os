@@ -2,9 +2,15 @@ use ark_ec::{short_weierstrass::Affine, AffineRepr};
 use ark_ff::PrimeField;
 use ark_serialize::SerializationError;
 
-#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"), test))]
+#[cfg(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    test
+))]
 use crate::ark_ff_delegation::BigInt;
-#[cfg(not(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"), test)))]
+#[cfg(not(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    test
+)))]
 use ark_ff::BigInt;
 
 use crate::bls12_381::{
@@ -35,11 +41,7 @@ impl EncodingFlags {
             return Err(SerializationError::InvalidData);
         }
 
-        Ok(Self {
-            is_compressed,
-            is_infinity,
-            is_lexographically_largest,
-        })
+        Ok(Self { is_compressed, is_infinity, is_lexographically_largest })
     }
 
     /// Encodes the flags into the byte-string
@@ -65,7 +67,10 @@ impl EncodingFlags {
     }
 }
 
-#[cfg(not(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"), test)))]
+#[cfg(not(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    test
+)))]
 pub(crate) fn deserialize_fq(bytes: [u8; 48]) -> Option<Fq> {
     let mut tmp = BigInt::new([0, 0, 0, 0, 0, 0]);
 
@@ -82,7 +87,10 @@ pub(crate) fn deserialize_fq(bytes: [u8; 48]) -> Option<Fq> {
     Fq::from_bigint(tmp)
 }
 
-#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"), test))]
+#[cfg(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    test
+))]
 pub(crate) fn deserialize_fq(bytes: [u8; 48]) -> Option<Fq> {
     let mut tmp = BigInt::new([0, 0, 0, 0, 0, 0, 0, 0]);
 
@@ -129,10 +137,7 @@ pub(crate) fn read_g1_compressed<R: ark_serialize::Read>(
     mut reader: R,
 ) -> Result<Affine<G1Config>, ark_serialize::SerializationError> {
     let mut bytes = [0u8; G1_SERIALIZED_SIZE];
-    reader
-        .read_exact(&mut bytes)
-        .ok()
-        .ok_or(SerializationError::InvalidData)?;
+    reader.read_exact(&mut bytes).ok().ok_or(SerializationError::InvalidData)?;
 
     // Obtain the three flags from the start of the byte sequence
     let flags = EncodingFlags::get_flags(&bytes[..])?;
@@ -165,9 +170,7 @@ pub(crate) fn read_g1_uncompressed<R: ark_serialize::Read>(
     mut reader: R,
 ) -> Result<Affine<G1Config>, ark_serialize::SerializationError> {
     let mut bytes = [0u8; 2 * G1_SERIALIZED_SIZE];
-    reader
-        .read_exact(&mut bytes)
-        .map_err(|_| SerializationError::InvalidData)?;
+    reader.read_exact(&mut bytes).map_err(|_| SerializationError::InvalidData)?;
 
     // Obtain the three flags from the start of the byte sequence
     let flags = EncodingFlags::get_flags(&bytes[..])?;
@@ -200,9 +203,7 @@ pub(crate) fn read_g2_compressed<R: ark_serialize::Read>(
     mut reader: R,
 ) -> Result<Affine<G2Config>, ark_serialize::SerializationError> {
     let mut bytes = [0u8; G2_SERIALIZED_SIZE];
-    reader
-        .read_exact(&mut bytes)
-        .map_err(|_| SerializationError::InvalidData)?;
+    reader.read_exact(&mut bytes).map_err(|_| SerializationError::InvalidData)?;
 
     // Obtain the three flags from the start of the byte sequence
     let flags = EncodingFlags::get_flags(&bytes)?;
@@ -228,162 +229,27 @@ pub(crate) fn read_g2_compressed<R: ark_serialize::Read>(
 
     let x = Fq2::new(xc0, xc1);
 
-    // WORKAROUND: Compute y using custom sqrt with explicit synchronization after each step.
-    // The standard sqrt() has internal CSR delegation issues that corrupt intermediate values.
-    use ark_ff::Field;
+    // Compute y from x using standard approach: y^2 = x^3 + b
     use ark_ec::short_weierstrass::SWCurveConfig;
+    use ark_ff::Field;
 
-    // Compute y^2 = x^3 + b with explicit sync after each step
-    let x_squared = x.square();
-    sync_fq2(&x_squared);
-
-    let x_cubed = x_squared * x;
-    sync_fq2(&x_cubed);
-
-    let y_squared = x_cubed + G2Config::COEFF_B;
-    sync_fq2(&y_squared);
-
-    // Custom Fq2 sqrt implementation with sync after each operation
-    let y = fq2_sqrt_with_sync(&y_squared).ok_or(SerializationError::InvalidData)?;
+    let y_squared = x.square() * x + G2Config::COEFF_B;
+    let y = y_squared.sqrt().ok_or(SerializationError::InvalidData)?;
 
     // Determine correct sign based on lexicographic ordering
     let neg_y = -y;
-    sync_fq2(&neg_y);
-
-    let y_final = if (y > neg_y) == flags.is_lexographically_largest {
-        y
-    } else {
-        neg_y
-    };
+    let y_final = if (y > neg_y) == flags.is_lexographically_largest { y } else { neg_y };
 
     let p = G2Affine::new_unchecked(x, y_final);
 
     Ok(p)
 }
 
-/// Custom sqrt for Fq2 with explicit memory synchronization after each operation.
-/// This is needed because the standard sqrt() has internal CSR delegation issues.
-/// Algorithm from https://eprint.iacr.org/2012/685.pdf (page 15, algorithm 8)
-fn fq2_sqrt_with_sync(val: &Fq2) -> Option<Fq2> {
-    use ark_ff::{AdditiveGroup, BigInteger, Field, LegendreSymbol, PrimeField, Zero};
-
-    // Special case: if c1 == 0, sqrt is simpler
-    if val.c1.is_zero() {
-        if val.c0.legendre().is_qr() {
-            let c0_sqrt = val.c0.sqrt()?;
-            sync_fq(&c0_sqrt);
-            return Some(Fq2::new(c0_sqrt, Fq::ZERO));
-        } else {
-            // sqrt(c0 / NONRESIDUE) where NONRESIDUE = -1
-            let c0_neg = -val.c0;
-            sync_fq(&c0_neg);
-            let c1_sqrt = c0_neg.sqrt()?;
-            sync_fq(&c1_sqrt);
-            return Some(Fq2::new(Fq::ZERO, c1_sqrt));
-        }
-    }
-
-    // Compute norm: alpha = c0^2 + c1^2 (since NONRESIDUE = -1, norm = c0^2 - nonres*c1^2 = c0^2 + c1^2)
-    let c0_sq = val.c0.square();
-    sync_fq(&c0_sq);
-
-    let c1_sq = val.c1.square();
-    sync_fq(&c1_sq);
-
-    let alpha = c0_sq + c1_sq;
-    sync_fq(&alpha);
-
-    // Compute sqrt(alpha) in Fq
-    let alpha_sqrt = alpha.sqrt()?;
-    sync_fq(&alpha_sqrt);
-
-    // Compute two_inv = (p+1)/2
-    let mut two_inv_bigint = Fq::MODULUS;
-    two_inv_bigint.add_with_carry(&1u64.into());
-    two_inv_bigint.div2();
-    let two_inv = Fq::from_bigint(two_inv_bigint)?;
-    sync_fq(&two_inv);
-
-    // delta = (alpha + c0) * two_inv
-    let alpha_plus_c0 = alpha_sqrt + val.c0;
-    sync_fq(&alpha_plus_c0);
-
-    let mut delta = alpha_plus_c0 * two_inv;
-    sync_fq(&delta);
-
-    // Check if delta is QR; if not, use delta - alpha instead
-    if delta.legendre() == LegendreSymbol::QuadraticNonResidue {
-        delta = delta - alpha_sqrt;
-        sync_fq(&delta);
-    }
-
-    // c0 = sqrt(delta)
-    let sqrt_c0 = delta.sqrt()?;
-    sync_fq(&sqrt_c0);
-
-    // c0_inv = 1/c0
-    let sqrt_c0_inv = sqrt_c0.inverse()?;
-    sync_fq(&sqrt_c0_inv);
-
-    // c1_coeff = c1 * two_inv * c0_inv
-    let c1_times_two_inv = val.c1 * two_inv;
-    sync_fq(&c1_times_two_inv);
-
-    let sqrt_c1 = c1_times_two_inv * sqrt_c0_inv;
-    sync_fq(&sqrt_c1);
-
-    let sqrt_cand = Fq2::new(sqrt_c0, sqrt_c1);
-    sync_fq2(&sqrt_cand);
-
-    // Verify: sqrt_cand^2 == val
-    let check = sqrt_cand.square();
-    sync_fq2(&check);
-
-    if check == *val {
-        Some(sqrt_cand)
-    } else {
-        None
-    }
-}
-
-/// Force memory synchronization for single Fq value after CSR delegation.
-#[inline(always)]
-fn sync_fq(val: &Fq) {
-    let mont = &val.0;
-    let mut checksum: u64 = 0;
-    for limb in mont.0.iter() {
-        checksum = checksum.wrapping_add(*limb);
-    }
-    core::hint::black_box(checksum);
-}
-
-/// Force memory synchronization for Fq2 values after CSR delegation operations.
-/// This works around memory ordering issues where CSR writes may not be immediately visible.
-/// Reads the underlying Montgomery form directly without triggering additional CSR operations.
-#[inline(always)]
-fn sync_fq2(val: &Fq2) {
-    // Access the underlying BigInt directly (field 0 of Fp) without going through into_bigint
-    // which would trigger more CSR operations for Montgomery reduction
-    let c0_mont = &(val.c0).0;
-    let c1_mont = &(val.c1).0;
-    // Compute checksum of all limbs (works for both 6-limb native and 8-limb RISC-V)
-    let mut checksum: u64 = 0;
-    for limb in c0_mont.0.iter() {
-        checksum = checksum.wrapping_add(*limb);
-    }
-    for limb in c1_mont.0.iter() {
-        checksum = checksum.wrapping_add(*limb);
-    }
-    core::hint::black_box(checksum);
-}
-
 pub(crate) fn read_g2_uncompressed<R: ark_serialize::Read>(
     mut reader: R,
 ) -> Result<Affine<G2Config>, ark_serialize::SerializationError> {
     let mut bytes = [0u8; 2 * G2_SERIALIZED_SIZE];
-    reader
-        .read_exact(&mut bytes)
-        .map_err(|_| SerializationError::InvalidData)?;
+    reader.read_exact(&mut bytes).map_err(|_| SerializationError::InvalidData)?;
 
     // Obtain the three flags from the start of the byte sequence
     let flags = EncodingFlags::get_flags(&bytes)?;
