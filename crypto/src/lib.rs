@@ -78,9 +78,8 @@ pub use self::raw_delegation_interface::{
 };
 
 pub fn init_lib() {
-    // BENCHMARK: disabled for non-delegation proving measurement
-    // #[cfg(all(target_arch = "riscv64", not(feature = "bigint_ops")))]
-    // compile_error!("init_lib: bigint_ops must be enabled for riscv64");
+    #[cfg(all(target_arch = "riscv64", not(feature = "bigint_ops")))]
+    compile_error!("init_lib: bigint_ops must be enabled for riscv64");
 
     #[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"), test))]
     {

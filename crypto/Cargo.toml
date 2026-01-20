@@ -65,9 +65,7 @@ rand_core = { version = "0.6.4", features = ["getrandom"] }
 [features]
 # forward = ["blake2"]
 forward = []
-# BENCHMARK: removed bigint_ops for non-delegation proving measurement
-# Original: proving = ["single_round_with_control", "bigint_ops", "secp256k1-static-context", "keccak_special5"]
-proving = ["single_round_with_control", "secp256k1-static-context", "keccak_special5"]
+proving = ["single_round_with_control", "bigint_ops", "secp256k1-static-context", "keccak_special5"]
 default = ["forward", "secp256k1-static-context"]
 # bigint_ops = ["zeroize", "num-bigint", "num-traits", "num-integer"]
 bigint_ops = []
