@@ -23,6 +23,7 @@ ruint = { workspace = true, default-features = false }
 seq-macro = "*"
 cfg-if = "1.0.0"
 const_for = "0.1.5"
+arrayvec = { version = "0.7", default-features = false }
 
 # zeroize = { version = "1", default-features = false, optional = true }
 # num-traits = { version = "0.2", default-features = false, optional = true }
@@ -75,3 +76,4 @@ secp256k1-static-context = []
 alloc = []
 sha3_tests = []
 testing = []
+zisk_keccak = []
