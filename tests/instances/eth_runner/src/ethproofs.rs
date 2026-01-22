@@ -13,8 +13,11 @@ use serde::Serialize;
 
 use base64::Engine;
 use crossbeam::channel::unbounded;
+#[cfg(feature = "with_gpu_prover")]
 use execution_utils::gpu_prover::execution::prover::ExecutionProverConfiguration;
+#[cfg(feature = "with_gpu_prover")]
 use execution_utils::unrolled::UnrolledProgramProof;
+#[cfg(feature = "with_gpu_prover")]
 use execution_utils::unrolled_gpu::{UnrolledProver, UnrolledProverLevel};
 use rig::chain::get_zksync_os_img_path;
 use std::thread::{sleep, spawn};

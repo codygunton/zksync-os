@@ -2,17 +2,14 @@
 #![feature(generic_const_exprs)]
 #![recursion_limit = "1024"]
 
-#[cfg(feature = "with_gpu_prover")]
 use crate::ethproofs::EthProofsConnector;
 use clap::{Parser, Subcommand};
-#[cfg(feature = "with_gpu_prover")]
 use ethproofs::ethproofs_live_run;
 use rig::env_logger;
 mod block;
 mod block_hashes;
 mod calltrace;
 pub(crate) mod dump_utils;
-#[cfg(feature = "with_gpu_prover")]
 mod ethproofs;
 mod live_run;
 mod native_model;
@@ -103,7 +100,6 @@ enum Command {
         db: String,
     },
     // Prove an ethereum block for Ethproofs
-    #[cfg(feature = "with_gpu_prover")]
     EthproofsRun {
         #[arg(long)]
         block_number: u64,
@@ -111,13 +107,11 @@ enum Command {
         reth_endpoint: String,
     },
     // Prove ethereum blocks for Ethproofs live
-    #[cfg(feature = "with_gpu_prover")]
     EthproofsLiveRun {
         #[arg(long)]
         reth_endpoint: String,
     },
     // Prove ethereum blocks for Ethproofs live
-    #[cfg(feature = "with_gpu_prover")]
     EthproofsWithProofs {
         #[arg(long)]
         reth_endpoint: String,
@@ -136,7 +130,6 @@ enum Command {
         #[arg(long)]
         prover_id: Option<u64>,
     },
-    #[cfg(feature = "with_gpu_prover")]
     EthproofsWithProofsNoSubmission {
         #[arg(long)]
         reth_endpoint: String,
@@ -146,7 +139,6 @@ enum Command {
         #[arg(long)]
         prover_id: Option<u64>,
     },
-    #[cfg(feature = "with_gpu_prover")]
     FetchWitness {
         #[arg(long)]
         reth_endpoint: String,
@@ -155,7 +147,6 @@ enum Command {
         #[arg(long)]
         witness_output_dir: String,
     },
-    #[cfg(feature = "with_gpu_prover")]
     ProveWithWitness {
         #[arg(long)]
         witness_input: String,
@@ -182,21 +173,6 @@ enum Command {
         reth_endpoint: String,
         #[arg(long)]
         cont: bool,
-    },
-    /// Dump block data from RPC endpoint (including witness.json)
-    DumpBlock {
-        /// Block number to dump
-        #[arg(long)]
-        block_number: u64,
-        /// RPC endpoint (Reth with debug APIs)
-        #[arg(long)]
-        endpoint: String,
-        /// Beacon chain endpoint (optional, for blobs)
-        #[arg(long)]
-        beacon_endpoint: Option<String>,
-        /// Output directory for block data
-        #[arg(long)]
-        output_dir: String,
     },
 }
 
@@ -232,7 +208,7 @@ fn main() -> anyhow::Result<()> {
             block_dir,
             chain_id,
             skip_witness,
-        } => crate::single_run::single_eth_run::<true>(block_dir, chain_id, skip_witness),
+        } => crate::single_run::single_eth_run::<false>(block_dir, chain_id, skip_witness),
         Command::LiveRun {
             start_block,
             end_block,
@@ -254,7 +230,6 @@ fn main() -> anyhow::Result<()> {
         ),
         Command::ExportRatios { db, path } => live_run::export_block_ratios(db, path),
         Command::ShowStatus { db } => live_run::show_status(db),
-        #[cfg(feature = "with_gpu_prover")]
         Command::EthproofsRun {
             block_number,
             reth_endpoint,
@@ -262,9 +237,7 @@ fn main() -> anyhow::Result<()> {
             ethproofs::ethproofs_run(block_number, &reth_endpoint, true, None)?;
             Ok(())
         }
-        #[cfg(feature = "with_gpu_prover")]
         Command::EthproofsLiveRun { reth_endpoint } => ethproofs_live_run(&reth_endpoint),
-        #[cfg(feature = "with_gpu_prover")]
         Command::EthproofsWithProofs {
             reth_endpoint,
             staging,
@@ -282,7 +255,6 @@ fn main() -> anyhow::Result<()> {
                 (prover_id, block_mod),
             )
         }
-        #[cfg(feature = "with_gpu_prover")]
         Command::EthproofsWithProofsNoSubmission {
             reth_endpoint,
             block_mod,
@@ -292,13 +264,11 @@ fn main() -> anyhow::Result<()> {
             let prover_id = prover_id.unwrap_or_else(|| 0);
             ethproofs::ethproofs_with_proofs(&reth_endpoint, None, (prover_id, block_mod))
         }
-        #[cfg(feature = "with_gpu_prover")]
         Command::FetchWitness {
             reth_endpoint,
             block_number,
             witness_output_dir,
         } => ethproofs::ethproofs_fetch_witness(&reth_endpoint, block_number, &witness_output_dir),
-        #[cfg(feature = "with_gpu_prover")]
         Command::ProveWithWitness {
             witness_input,
             worker_threads,
@@ -328,36 +298,20 @@ fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Command::DumpBlock {
-            block_number,
-            endpoint,
-            beacon_endpoint,
-            output_dir,
-        } => {
-            std::fs::create_dir_all(&output_dir)?;
-            crate::dump_utils::dump_eth_block(
-                block_number,
-                &endpoint,
-                None,
-                beacon_endpoint.as_deref().unwrap_or(""),
-                output_dir,
-            )
-        }
     }
 }
 
 #[cfg(test)]
 mod test {
-    // Note: execution_utils imports commented out - only needed with gpu_prover feature
-    // use execution_utils::{
-    //     setups::prover::{common_constants, worker::Worker},
-    //     unrolled::{UnrolledProgramProof, UnrolledProgramSetup},
-    // };
-    // use risc_v_simulator::{cycle::IMStandardIsaConfigWithUnsignedMulDiv, setup};
+    use execution_utils::{
+        setups::prover::{common_constants, worker::Worker},
+        unrolled::{UnrolledProgramProof, UnrolledProgramSetup},
+    };
+    use risc_v_simulator::{cycle::IMStandardIsaConfigWithUnsignedMulDiv, setup};
 
     #[test]
     fn invoke_single_block() {
-        crate::single_run::single_run("blocks/19299001".to_string(), None, false, None, Some(1))
+        crate::single_run::single_run("blocks/19299001".to_string(), None, false, None, Some(1), false)
             .expect("must succeed");
     }
 
@@ -383,7 +337,7 @@ mod test {
     #[test]
     fn invoke_single_eth_block() {
         let block_number = 23832885;
-        crate::single_run::single_eth_run::<true>(format!("blocks/{}", block_number), Some(1))
+        crate::single_run::single_eth_run::<true>(format!("blocks/{}", block_number), Some(1), false)
             .expect("must succeed");
     }
 
