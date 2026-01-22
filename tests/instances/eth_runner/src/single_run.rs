@@ -31,6 +31,7 @@ fn run<const RANDOMIZED: bool>(
     block_hashes: Option<BlockHashes>,
     witness_output_dir: Option<String>,
     withdrawals: &[Withdrawal],
+    only_forward: bool,
 ) -> anyhow::Result<()> {
     chain.set_last_block_number(block_number - 1);
 
@@ -58,6 +59,7 @@ fn run<const RANDOMIZED: bool>(
         None,
         output_path,
         Some(BIN_NAME.to_string()),
+        only_forward,
     );
 
     let _ratio = compute_ratio(stats);
@@ -92,6 +94,7 @@ fn eth_run<const PROOF_ENV: bool>(
     withdrawals_encoding: Vec<u8>,
     account_diffs: Vec<AccountStateDiffs>,
     blobs: Vec<BlobTransactionSidecarItem>,
+    skip_witness: bool,
 ) -> anyhow::Result<()> {
     chain.set_last_block_number(block_number - 1);
 
@@ -99,20 +102,25 @@ fn eth_run<const PROOF_ENV: bool>(
 
     let prestate_cache = populate_prestate(&mut chain, ps_trace, &calltrace);
 
-    let witness_output_dir = {
+    let witness_output_dir = if skip_witness {
+        None
+    } else {
         let mut suffix = block_number.to_string();
         suffix.push_str("_witness");
-        std::path::PathBuf::from(&suffix)
+        Some(std::path::PathBuf::from(&suffix))
     };
 
-    let mut result_keeper = chain.run_eth_block::<PROOF_ENV>(
+    let (result_keeper_opt, _) = chain.run_eth_block_with_options::<PROOF_ENV>(
         transactions,
         witness,
         header,
         withdrawals_encoding,
-        Some(witness_output_dir),
+        witness_output_dir,
         None,
+        true,          // compute_result_keeper
+        !skip_witness, // compute_witness
     );
+    let mut result_keeper = result_keeper_opt.expect("result_keeper should be computed");
 
     if PROOF_ENV {
         for el in account_diffs.into_iter() {
@@ -185,6 +193,7 @@ pub fn single_run(
     randomized: bool,
     witness_output_dir: Option<String>,
     chain_id: Option<u64>,
+    only_forward: bool,
 ) -> anyhow::Result<()> {
     use std::path::Path;
     let dir = Path::new(&block_dir);
@@ -267,6 +276,7 @@ pub fn single_run(
             block_hashes,
             witness_output_dir,
             &withdrawals,
+            only_forward,
         )
     } else {
         let chain = Chain::empty(Some(1));
@@ -283,6 +293,7 @@ pub fn single_run(
             block_hashes,
             witness_output_dir,
             &withdrawals,
+            only_forward,
         )
     }
 }
@@ -340,6 +351,7 @@ pub fn create_eth_run_oracle(
 pub fn single_eth_run<const PROOF_ENV: bool>(
     block_dir: String,
     chain_id: Option<u64>,
+    skip_witness: bool,
 ) -> anyhow::Result<()> {
     use crate::live_run::rpc::JsonResponse;
     use alloy_primitives::U256;
@@ -466,5 +478,6 @@ pub fn single_eth_run<const PROOF_ENV: bool>(
         withdrawals_encoding,
         account_diffs,
         vec![],
+        skip_witness,
     )
 }

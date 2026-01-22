@@ -50,9 +50,10 @@ risc_v_simulator = { git = "https://github.com/matter-labs/zksync-airbender", br
 [features]
 simulate_witness_gen = ["rig/simulate_witness_gen"]
 # default = []
-# default = ["evm_replay"]
+default = ["evm_replay"]
 # default = ["evm_replay", "pectra"]
-default = ["evm_replay", "pectra", "with_gpu_prover"]
+# default = ["evm_replay", "pectra", "with_gpu_prover"]  # Requires GPU prover setup
+# default = ["evm_replay", "pectra"]  # For cycle benchmarking without GPU prover
 # default = ["evm_replay", "pectra", "debug_satisfiable", "precheck_satisfied"]
 risc_v_logs = []
 evm_replay = ["rig/prevrandao", "rig/unlimited_native", "rig/disable_system_contracts", "rig/evm_refunds", "rig/evm-compatibility"]
@@ -63,3 +64,7 @@ with_gpu_prover = ["execution_utils", "execution_utils/prover", "execution_utils
 debug_satisfiable = ["execution_utils/debug_satisfiable"]
 # Will perform satisfiability tests on witness
 precheck_satisfied = ["execution_utils/precheck_satisfied"]
+# Enables ZisK witness generation (64-bit RISC-V)
+zisk-witness = ["rig/zisk-witness"]
+# Enables cycle marker output for Airbender simulator
+cycle_marker = ["zksync_os_runner/cycle_marker"]
