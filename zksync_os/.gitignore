@@ -1,4 +1,6 @@
-app_debug.bin
-app_debug.elf
-app_debug.text
+# Build artifacts
+*.bin
+*.elf
+*.text
+*.dump
 /target
