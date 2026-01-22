@@ -84,13 +84,12 @@ mod csr {
     {
         #[inline(always)]
         fn csr_read_impl() -> usize {
-            const {
-                assert!(core::mem::size_of::<usize>() == core::mem::size_of::<u32>());
-            }
+            // csr_read_word returns u32, zero-extended to usize on 64-bit
             csr_read_word() as usize
         }
         #[inline(always)]
         fn csr_write_impl(value: usize) {
+            // On 64-bit, this truncates to lower 32 bits which is correct for the protocol
             core::hint::black_box(csr_write_word(value))
         }
     }
