@@ -2,16 +2,16 @@
 
 // Custom types below are NOT Copy in Rust's sense, even though Clone internally would use copy
 
-#[cfg(any(not(feature = "delegation"), not(target_arch = "riscv32"), test))]
+#[cfg(any(not(feature = "delegation"), not(any(target_arch = "riscv32", target_arch = "riscv64")), test))]
 mod naive;
 
-#[cfg(not(all(feature = "delegation", target_arch = "riscv32")))]
+#[cfg(not(all(feature = "delegation", any(target_arch = "riscv32", target_arch = "riscv64"))))]
 pub use self::naive::U256;
 
-#[cfg(any(all(target_arch = "riscv32", feature = "delegation"), test))]
+#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "delegation"), test))]
 mod risc_v;
 
-#[cfg(all(feature = "delegation", target_arch = "riscv32"))]
+#[cfg(all(feature = "delegation", any(target_arch = "riscv32", target_arch = "riscv64")))]
 pub use self::risc_v::U256;
 
 #[derive(Debug)]

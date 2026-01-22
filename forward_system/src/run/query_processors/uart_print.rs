@@ -1,8 +1,30 @@
 use super::*;
 use oracle_provider::OracleQueryProcessor;
+use std::sync::Mutex;
 use zk_ee::system_io_oracle::dyn_usize_iterator::DynUsizeIterator;
 use zk_ee::system_io_oracle::UART_QUERY_ID;
 
+/// Line buffer for accumulating output until newline
+static LINE_BUFFER: Mutex<String> = Mutex::new(String::new());
+
+/// Append text to the line buffer and flush complete lines with [GUEST] prefix
+fn append_and_flush(text: &str) {
+    let mut buffer = LINE_BUFFER.lock().unwrap();
+    for ch in text.chars() {
+        if ch == '\n' {
+            // Flush the line with prefix
+            eprintln!("[GUEST] {}", buffer);
+            buffer.clear();
+        } else {
+            buffer.push(ch);
+        }
+    }
+}
+
+/// This processor handles debug print requests from the RISC-V execution
+/// environment. It receives formatted string data and outputs it to stdout,
+/// providing a mechanism for debugging and logging from within the ZK
+/// execution environment.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 pub struct UARTPrintReponsder;
 
@@ -39,8 +61,8 @@ impl OracleQueryProcessor for UARTPrintReponsder {
             .collect();
         assert!(string_bytes.len() >= message_len_in_bytes);
         string_bytes.truncate(message_len_in_bytes);
-        print!("{}", String::from_utf8_lossy(&string_bytes));
-        // println!("UART: {}", String::from_utf8_lossy(&string_bytes));
+        // Append to line buffer and flush complete lines with [GUEST] prefix
+        append_and_flush(&String::from_utf8_lossy(&string_bytes));
 
         DynUsizeIterator::from_constructor((), UsizeSerializable::iter)
     }

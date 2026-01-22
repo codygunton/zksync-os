@@ -12,9 +12,15 @@ use ark_ec::{
 use ark_ff::{AdditiveGroup, Field, PrimeField, Zero};
 use ark_serialize::{Compress, SerializationError};
 
-#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+#[cfg(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    test
+))]
 use crate::ark_ff_delegation::{BigIntMacro as BigInt, MontFp};
-#[cfg(not(any(all(target_arch = "riscv32", feature = "bigint_ops"), test)))]
+#[cfg(not(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    test
+)))]
 use ark_ff::{BigInt, MontFp};
 
 use super::{
@@ -132,9 +138,10 @@ impl SWCurveConfig for Config {
             read_g2_uncompressed(&mut reader)?
         };
 
-        if validate == ark_serialize::Validate::Yes && !p.is_in_correct_subgroup_assuming_on_curve()
-        {
-            return Err(SerializationError::InvalidData);
+        if validate == ark_serialize::Validate::Yes {
+            if !p.is_zero() && !p.is_in_correct_subgroup_assuming_on_curve() {
+                return Err(ark_serialize::SerializationError::InvalidData);
+            }
         }
         Ok(p)
     }

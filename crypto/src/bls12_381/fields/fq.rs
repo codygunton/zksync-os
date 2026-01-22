@@ -1,4 +1,4 @@
-#[cfg(all(target_arch = "riscv32", not(feature = "bigint_ops")))]
+#[cfg(all(any(target_arch = "riscv32", target_arch = "riscv64"), not(feature = "bigint_ops")))]
 compile_error!("feature `bigint_ops` must be activated for RISC-V target");
 
 // partially reused cargo expand of derived FqConfig with multiplication updated
@@ -7,7 +7,7 @@ compile_error!("feature `bigint_ops` must be activated for RISC-V target");
 
 // NOTE: we operate with 256-bit "limbs", so Montgomery representation is 512 bits
 
-#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"), test))]
 pub fn init() {
     unsafe {
         MODULUS.as_mut_ptr().write(MODULUS_CONSTANT);
@@ -89,6 +89,19 @@ impl MontConfig<NUM_LIMBS> for FqConfig {
         unsafe {
             u512::mul_assign_montgomery::<FqParams>(&mut a.0, &BigInt::one());
         }
+
+        // WORKAROUND: Force memory reads after CSR delegation
+        // The bigint CSR delegation has memory ordering issues where writes
+        // may not be immediately visible. We force reads of all limbs and
+        // use them in a way that the optimizer cannot eliminate.
+        let checksum = a.0.0[0]
+            .wrapping_add(a.0.0[1])
+            .wrapping_add(a.0.0[2])
+            .wrapping_add(a.0.0[3])
+            .wrapping_add(a.0.0[4])
+            .wrapping_add(a.0.0[5]);
+        core::hint::black_box(checksum);
+
         a.0
     }
 
@@ -132,12 +145,30 @@ impl MontConfig<NUM_LIMBS> for FqConfig {
         unsafe {
             u512::add_mod_assign::<FqParams>(&mut a.0, &b.0);
         }
+
+        // WORKAROUND: Force memory reads after CSR delegation
+        let checksum = a.0.0[0]
+            .wrapping_add(a.0.0[1])
+            .wrapping_add(a.0.0[2])
+            .wrapping_add(a.0.0[3])
+            .wrapping_add(a.0.0[4])
+            .wrapping_add(a.0.0[5]);
+        core::hint::black_box(checksum);
     }
     #[inline(always)]
     fn sub_assign(a: &mut F, b: &F) {
         unsafe {
             u512::sub_mod_assign::<FqParams>(&mut a.0, &b.0);
         }
+
+        // WORKAROUND: Force memory reads after CSR delegation
+        let checksum = a.0.0[0]
+            .wrapping_add(a.0.0[1])
+            .wrapping_add(a.0.0[2])
+            .wrapping_add(a.0.0[3])
+            .wrapping_add(a.0.0[4])
+            .wrapping_add(a.0.0[5]);
+        core::hint::black_box(checksum);
     }
 
     #[inline(always)]
@@ -145,6 +176,15 @@ impl MontConfig<NUM_LIMBS> for FqConfig {
         unsafe {
             u512::double_mod_assign::<FqParams>(&mut a.0);
         }
+
+        // WORKAROUND: Force memory reads after CSR delegation
+        let checksum = a.0.0[0]
+            .wrapping_add(a.0.0[1])
+            .wrapping_add(a.0.0[2])
+            .wrapping_add(a.0.0[3])
+            .wrapping_add(a.0.0[4])
+            .wrapping_add(a.0.0[5]);
+        core::hint::black_box(checksum);
     }
     /// Sets `a = -a`.
     #[inline(always)]
@@ -152,6 +192,15 @@ impl MontConfig<NUM_LIMBS> for FqConfig {
         unsafe {
             u512::neg_mod_assign::<FqParams>(&mut a.0);
         }
+
+        // WORKAROUND: Force memory reads after CSR delegation
+        let checksum = a.0.0[0]
+            .wrapping_add(a.0.0[1])
+            .wrapping_add(a.0.0[2])
+            .wrapping_add(a.0.0[3])
+            .wrapping_add(a.0.0[4])
+            .wrapping_add(a.0.0[5]);
+        core::hint::black_box(checksum);
     }
 
     #[inline(always)]
@@ -159,6 +208,18 @@ impl MontConfig<NUM_LIMBS> for FqConfig {
         unsafe {
             u512::mul_assign_montgomery::<FqParams>(&mut a.0, &b.0);
         }
+
+        // WORKAROUND: Force memory reads after CSR delegation
+        // The bigint CSR delegation has memory ordering issues where writes
+        // may not be immediately visible. We force reads of all limbs and
+        // use them in a way that the optimizer cannot eliminate.
+        let checksum = a.0.0[0]
+            .wrapping_add(a.0.0[1])
+            .wrapping_add(a.0.0[2])
+            .wrapping_add(a.0.0[3])
+            .wrapping_add(a.0.0[4])
+            .wrapping_add(a.0.0[5]);
+        core::hint::black_box(checksum);
     }
 
     #[inline(always)]
@@ -166,6 +227,18 @@ impl MontConfig<NUM_LIMBS> for FqConfig {
         unsafe {
             u512::square_assign_montgomery::<FqParams>(&mut a.0);
         }
+
+        // WORKAROUND: Force memory reads after CSR delegation
+        // The bigint CSR delegation has memory ordering issues where writes
+        // may not be immediately visible. We force reads of all limbs and
+        // use them in a way that the optimizer cannot eliminate.
+        let checksum = a.0.0[0]
+            .wrapping_add(a.0.0[1])
+            .wrapping_add(a.0.0[2])
+            .wrapping_add(a.0.0[3])
+            .wrapping_add(a.0.0[4])
+            .wrapping_add(a.0.0[5]);
+        core::hint::black_box(checksum);
     }
 
     fn inverse(

@@ -1,4 +1,4 @@
-#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"), test))]
 mod fe32_delegation;
 
 mod fe64;
@@ -6,7 +6,7 @@ mod fe64;
 use core::ops::MulAssign;
 
 cfg_if::cfg_if! {
-    if #[cfg(all(target_arch = "riscv32", feature = "bigint_ops"))] {
+    if #[cfg(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"))] {
         pub(super) use fe32_delegation::FieldElement;
     } else {
         pub(super) use fe64::FieldElement;
@@ -15,7 +15,7 @@ cfg_if::cfg_if! {
 
 pub(super) use fe64::FieldElement as FieldElementConst;
 
-#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"), test))]
 pub use fe32_delegation::init;
 
 use super::Secp256r1Err;
@@ -135,12 +135,12 @@ impl FieldElementConst {
         x
     }
 
-    #[cfg(not(all(target_arch = "riscv32", feature = "bigint_ops")))]
+    #[cfg(not(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops")))]
     pub(super) const fn to_fe(self) -> FieldElement {
         self
     }
 
-    #[cfg(all(target_arch = "riscv32", feature = "bigint_ops"))]
+    #[cfg(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"))]
     pub(super) const fn to_fe(self) -> FieldElement {
         use crate::ark_ff_delegation::BigInt;
 

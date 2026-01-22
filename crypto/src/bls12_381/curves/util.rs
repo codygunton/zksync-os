@@ -2,9 +2,15 @@ use ark_ec::{short_weierstrass::Affine, AffineRepr};
 use ark_ff::PrimeField;
 use ark_serialize::SerializationError;
 
-#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+#[cfg(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    test
+))]
 use crate::ark_ff_delegation::BigInt;
-#[cfg(not(any(all(target_arch = "riscv32", feature = "bigint_ops"), test)))]
+#[cfg(not(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    test
+)))]
 use ark_ff::BigInt;
 
 use crate::bls12_381::{
@@ -35,11 +41,7 @@ impl EncodingFlags {
             return Err(SerializationError::InvalidData);
         }
 
-        Ok(Self {
-            is_compressed,
-            is_infinity,
-            is_lexographically_largest,
-        })
+        Ok(Self { is_compressed, is_infinity, is_lexographically_largest })
     }
 
     /// Encodes the flags into the byte-string
@@ -65,7 +67,10 @@ impl EncodingFlags {
     }
 }
 
-#[cfg(not(any(all(target_arch = "riscv32", feature = "bigint_ops"), test)))]
+#[cfg(not(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    test
+)))]
 pub(crate) fn deserialize_fq(bytes: [u8; 48]) -> Option<Fq> {
     let mut tmp = BigInt::new([0, 0, 0, 0, 0, 0]);
 
@@ -82,7 +87,10 @@ pub(crate) fn deserialize_fq(bytes: [u8; 48]) -> Option<Fq> {
     Fq::from_bigint(tmp)
 }
 
-#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+#[cfg(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    test
+))]
 pub(crate) fn deserialize_fq(bytes: [u8; 48]) -> Option<Fq> {
     let mut tmp = BigInt::new([0, 0, 0, 0, 0, 0, 0, 0]);
 
@@ -129,10 +137,7 @@ pub(crate) fn read_g1_compressed<R: ark_serialize::Read>(
     mut reader: R,
 ) -> Result<Affine<G1Config>, ark_serialize::SerializationError> {
     let mut bytes = [0u8; G1_SERIALIZED_SIZE];
-    reader
-        .read_exact(&mut bytes)
-        .ok()
-        .ok_or(SerializationError::InvalidData)?;
+    reader.read_exact(&mut bytes).ok().ok_or(SerializationError::InvalidData)?;
 
     // Obtain the three flags from the start of the byte sequence
     let flags = EncodingFlags::get_flags(&bytes[..])?;
@@ -165,9 +170,7 @@ pub(crate) fn read_g1_uncompressed<R: ark_serialize::Read>(
     mut reader: R,
 ) -> Result<Affine<G1Config>, ark_serialize::SerializationError> {
     let mut bytes = [0u8; 2 * G1_SERIALIZED_SIZE];
-    reader
-        .read_exact(&mut bytes)
-        .map_err(|_| SerializationError::InvalidData)?;
+    reader.read_exact(&mut bytes).map_err(|_| SerializationError::InvalidData)?;
 
     // Obtain the three flags from the start of the byte sequence
     let flags = EncodingFlags::get_flags(&bytes[..])?;
@@ -200,9 +203,7 @@ pub(crate) fn read_g2_compressed<R: ark_serialize::Read>(
     mut reader: R,
 ) -> Result<Affine<G2Config>, ark_serialize::SerializationError> {
     let mut bytes = [0u8; G2_SERIALIZED_SIZE];
-    reader
-        .read_exact(&mut bytes)
-        .map_err(|_| SerializationError::InvalidData)?;
+    reader.read_exact(&mut bytes).map_err(|_| SerializationError::InvalidData)?;
 
     // Obtain the three flags from the start of the byte sequence
     let flags = EncodingFlags::get_flags(&bytes)?;
@@ -225,10 +226,21 @@ pub(crate) fn read_g2_compressed<R: ark_serialize::Read>(
     // Attempt to obtain the x-coordinate
     let xc1 = deserialize_fq(xc1_bytes).ok_or(SerializationError::InvalidData)?;
     let xc0 = deserialize_fq(xc0_bytes).ok_or(SerializationError::InvalidData)?;
+
     let x = Fq2::new(xc0, xc1);
 
-    let p = G2Affine::get_point_from_x_unchecked(x, flags.is_lexographically_largest)
-        .ok_or(SerializationError::InvalidData)?;
+    // Compute y from x using standard approach: y^2 = x^3 + b
+    use ark_ec::short_weierstrass::SWCurveConfig;
+    use ark_ff::Field;
+
+    let y_squared = x.square() * x + G2Config::COEFF_B;
+    let y = y_squared.sqrt().ok_or(SerializationError::InvalidData)?;
+
+    // Determine correct sign based on lexicographic ordering
+    let neg_y = -y;
+    let y_final = if (y > neg_y) == flags.is_lexographically_largest { y } else { neg_y };
+
+    let p = G2Affine::new_unchecked(x, y_final);
 
     Ok(p)
 }
@@ -237,9 +249,7 @@ pub(crate) fn read_g2_uncompressed<R: ark_serialize::Read>(
     mut reader: R,
 ) -> Result<Affine<G2Config>, ark_serialize::SerializationError> {
     let mut bytes = [0u8; 2 * G2_SERIALIZED_SIZE];
-    reader
-        .read_exact(&mut bytes)
-        .map_err(|_| SerializationError::InvalidData)?;
+    reader.read_exact(&mut bytes).map_err(|_| SerializationError::InvalidData)?;
 
     // Obtain the three flags from the start of the byte sequence
     let flags = EncodingFlags::get_flags(&bytes)?;

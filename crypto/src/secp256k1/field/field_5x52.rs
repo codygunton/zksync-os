@@ -498,11 +498,7 @@ impl FieldElement5x52 {
 
     #[inline(always)]
     pub(crate) fn invert_in_place(&mut self) {
-        *self = self
-            .normalize()
-            .to_signed62()
-            .modinv64(&MOD_INFO)
-            .to_field_elem();
+        *self = self.normalize().to_signed62().modinv64(&MOD_INFO).to_field_elem();
     }
 
     #[inline(always)]
@@ -531,6 +527,7 @@ pub(super) struct FieldStorage5x52([u64; 4]);
 impl FieldStorage5x52 {
     pub(super) const DEFAULT: Self = Self([0; 4]);
 
+    #[cfg(not(all(target_arch = "riscv64", feature = "bigint_ops")))]
     #[inline(always)]
     pub(super) const fn to_field_elem(self) -> FieldElement5x52 {
         FieldElement5x52([
@@ -540,6 +537,14 @@ impl FieldStorage5x52 {
             self.0[2] >> 28 | ((self.0[3] << 36) & 0xFFFFFFFFFFFFF),
             self.0[3] >> 16,
         ])
+    }
+
+    // Delegation conversion: returns FieldElement8x32 when using bigint_ops on riscv64
+    #[cfg(all(target_arch = "riscv64", feature = "bigint_ops"))]
+    #[inline(always)]
+    pub(super) fn to_field_elem(self) -> super::field_8x32::FieldElement8x32 {
+        use crate::ark_ff_delegation::BigInt;
+        super::field_8x32::FieldElement8x32(BigInt([self.0[0], self.0[1], self.0[2], self.0[3]]))
     }
 }
 
