@@ -1,3 +1,12 @@
+//! CSR-based I/O Oracle for ZKsync-OS
+//!
+//! This module implements the oracle witness protocol - the mechanism for
+//! capturing non-deterministic CSR reads during execution. The collected
+//! `Vec<u32>` values (oracle_witness) are fed to the ZK prover.
+//!
+//! Note: This is distinct from the Ethereum "block witness" (ExecutionWitness)
+//! which contains state proofs from RPC.
+
 use zk_ee::{
     kv_markers::{UsizeDeserializable, UsizeSerializable},
     system::errors::internal::InternalError,
@@ -30,7 +39,7 @@ impl<I: NonDeterminismCSRSourceImplementation> Iterator for CsrBasedIOOracleIter
                 if #[cfg(target_pointer_width = "32")] {
                     Some(I::csr_read_impl())
                 } else if #[cfg(target_pointer_width = "64")] {
-                    // On 64-bit, oracle provides u32 values (same as 32-bit witness)
+                    // On 64-bit, oracle provides u32 values (same as 32-bit oracle witness format)
                     // Read two u32s and combine into one u64
                     let low = I::csr_read_impl() as u32;
                     let high = I::csr_read_impl() as u32;

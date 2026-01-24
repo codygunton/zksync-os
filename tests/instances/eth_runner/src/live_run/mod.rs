@@ -87,7 +87,7 @@ fn run_block(
     block_number: u64,
     db: &Database,
     endpoint: &str,
-    witness_output_dir: Option<String>,
+    oracle_witness_output_dir: Option<String>,
     persist_all: bool,
     chain_id: Option<u64>,
 ) -> Result<BlockStatus> {
@@ -162,7 +162,7 @@ fn run_block(
 
     let prestate_cache = populate_prestate(&mut chain, ps_trace, &calltrace);
 
-    let output_path = witness_output_dir.map(|dir| {
+    let output_path = oracle_witness_output_dir.map(|dir| {
         let mut suffix = block_number.to_string();
         suffix.push_str("_witness");
         std::path::Path::new(&dir).join(suffix)
@@ -217,7 +217,7 @@ pub fn live_run(
     end_block: u64,
     endpoint: String,
     db_path: String,
-    witness_output_dir: Option<String>,
+    oracle_witness_output_dir: Option<String>,
     skip_successful: bool,
     persist_all: bool,
     chain_id: Option<u64>,
@@ -237,7 +237,7 @@ pub fn live_run(
             n,
             &db,
             &endpoint,
-            witness_output_dir.clone(),
+            oracle_witness_output_dir.clone(),
             persist_all,
             chain_id,
         )? {

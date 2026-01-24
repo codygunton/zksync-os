@@ -145,7 +145,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
 
     /// TODO: duplicated from API, unify. That is also buggy as it doesn't account for ROM in the machine
     /// Runs a batch in riscV - using zksync_os binary - and returns the
-    /// witness that can be passed to the prover subsystem.
+    /// oracle witness that can be passed to the prover subsystem.
     pub fn run_batch_generate_witness<const FLAMEGRAPH: bool>(
         oracle: ZkEENonDeterminismSource,
         app: &Option<String>,
@@ -181,7 +181,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
 
     /// TODO: duplicated from API, unify. That is also buggy as it doesn't account for ROM in the machine
     /// Runs a batch in riscV - using zksync_os binary - and returns the
-    /// witness that can be passed to the prover subsystem.
+    /// oracle witness that can be passed to the prover subsystem.
     pub fn run_batch_via_transpiler<
         const FLAMEGRAPH: bool,
         const ROM_BOUND_SECOND_WORD_BITS: usize,
@@ -277,8 +277,8 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
             .0
     }
 
-    /// Run block using ZisK emulator for witness generation.
-    /// Returns the witness (CSR reads) and the proof output (register values x10-x17 as [u32; 8]).
+    /// Run block using ZisK emulator for oracle witness generation.
+    /// Returns the oracle witness (CSR reads) and the proof output (register values x10-x17 as [u32; 8]).
     #[cfg(feature = "zisk-witness")]
     pub fn run_block_generate_witness_zisk(
         oracle: ZkEENonDeterminismSource,
@@ -295,7 +295,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
 
         // Create the bridge that wraps the oracle and captures reads
         let bridge = ZiskOracleBridge::new(oracle, memory_source);
-        let witness_ref = bridge.get_witness();
+        let oracle_witness_ref = bridge.get_oracle_witness();
         let oracle_callback = bridge.into_callback();
 
         // Create emulator options
@@ -324,9 +324,9 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
                 eprintln!("\n[ZISK] Emulation complete");
                 eprintln!("[ZISK] Proof output (x10-x17): {:08x?}", proof_output);
 
-                let witness = witness_ref.lock().expect("witness lock").clone();
-                info!("Generated witness with {} u32 values", witness.len());
-                (witness, proof_output)
+                let oracle_witness = oracle_witness_ref.lock().expect("oracle_witness lock").clone();
+                info!("Generated oracle witness with {} u32 values", oracle_witness.len());
+                (oracle_witness, proof_output)
             }
             Err(e) => {
                 panic!("Zisk emulator failed: {:?}", e);
@@ -339,7 +339,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
         transactions: Vec<Vec<u8>>,
         block_context: Option<BlockContext>,
         profiler_config: Option<ProfilerConfig>,
-        witness_output_file: Option<PathBuf>,
+        oracle_witness_output_file: Option<PathBuf>,
         app: Option<String>,
         only_forward: bool,
     ) -> (BlockOutput, BlockExtraStats) {
@@ -442,11 +442,11 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
         }
 
         if !only_forward {
-            if let Some(path) = witness_output_file {
-                let (result, _proof_output) = Self::run_batch_generate_witness::<false>(oracle, &app);
+            if let Some(path) = oracle_witness_output_file {
+                let (oracle_witness, _proof_output) = Self::run_batch_generate_witness::<false>(oracle, &app);
                 let mut file = File::create(&path).expect("should create file");
-                let witness: Vec<u8> = result.iter().flat_map(|x| x.to_be_bytes()).collect();
-                let hex = hex::encode(witness);
+                let oracle_witness_bytes: Vec<u8> = oracle_witness.iter().flat_map(|x| x.to_be_bytes()).collect();
+                let hex = hex::encode(oracle_witness_bytes);
                 file.write_all(hex.as_bytes())
                     .expect("should write to file");
             } else {
@@ -460,23 +460,23 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
                     info!("Running ZisK emulator with ELF: {}", elf_path_str);
                     let now = std::time::Instant::now();
 
-                    let (witness, proof_output) = Self::run_block_generate_witness_zisk(oracle, elf_path_str);
+                    let (oracle_witness, proof_output) = Self::run_block_generate_witness_zisk(oracle, elf_path_str);
 
                     info!(
-                        "ZisK emulator executed over {:?}, {} witness elements",
+                        "ZisK emulator executed over {:?}, {} oracle witness elements",
                         now.elapsed(),
-                        witness.len()
+                        oracle_witness.len()
                     );
 
                     // dump csr reads if env var set
                     if let Ok(output_csr) = std::env::var("CSR_READS_DUMP") {
                         let mut file = File::create(&output_csr).expect("Failed to create csr reads file");
-                        for num in witness.iter() {
+                        for num in oracle_witness.iter() {
                             write!(file, "{num:08X}").expect("Failed to write to file");
                         }
                         debug!(
                             "Successfully wrote {} u32 csr reads elements to file: {}",
-                            witness.len(),
+                            oracle_witness.len(),
                             output_csr
                         );
                     }
@@ -602,14 +602,14 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
 
     pub fn make_eth_block_oracle(
         transactions: Vec<Vec<u8>>,
-        witness: alloy_rpc_types_debug::ExecutionWitness,
+        block_witness: alloy_rpc_types_debug::ExecutionWitness,
         block_header: Header,
         withdrawals: Vec<u8>,
     ) -> ZkEENonDeterminismSource {
         use crypto::MiniDigest;
         use std::collections::BTreeMap;
 
-        let mut headers: Vec<Header> = witness
+        let mut headers: Vec<Header> = block_witness
             .headers
             .iter()
             .map(|el| {
@@ -621,13 +621,13 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
         assert!(headers.len() > 0);
         assert!(headers.is_sorted_by(|a, b| a.number < b.number));
         headers.reverse();
-        assert_eq!(headers.len(), witness.headers.len());
+        assert_eq!(headers.len(), block_witness.headers.len());
 
         let block_number = headers[0].number + 1;
         assert_eq!(block_number, block_header.number);
 
         let mut headers_encodings: Vec<_> =
-            witness.headers.iter().map(|el| el.0.to_vec()).collect();
+            block_witness.headers.iter().map(|el| el.0.to_vec()).collect();
         headers_encodings.reverse();
 
         let initial_root = headers[0].state_root;
@@ -638,7 +638,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
         let mut hasher = crypto::sha3::Keccak256::new();
 
         // make an oracle
-        for el in witness.state.iter() {
+        for el in block_witness.state.iter() {
             hasher.update(el);
             let hash = hasher.finalize_reset();
             oracle.insert(Bytes32::from_array(hash), el.to_vec());
@@ -647,7 +647,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
                 .insert(Bytes32::from_array(hash), el.to_vec());
         }
 
-        for el in witness.codes.iter() {
+        for el in block_witness.codes.iter() {
             hasher.update(el);
             let hash = hasher.finalize_reset();
             oracle.insert(Bytes32::from_array(hash), el.to_vec());
@@ -665,7 +665,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
         let mut accounts_mpt: EthereumMPT<'_, Global, VecCtor, false> =
             EthereumMPT::new_in(initial_root.0, &mut interner, Global).unwrap();
         let mut account_properties = HashMap::<B160, EthereumAccountProperties>::new();
-        for el in witness.keys.iter() {
+        for el in block_witness.keys.iter() {
             if el.len() == 20 {
                 hasher.update(el);
                 let hash = hasher.finalize_reset();
@@ -738,18 +738,18 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
     pub fn run_eth_block<const PROOF_ENV: bool>(
         &mut self,
         transactions: Vec<Vec<u8>>,
-        witness: alloy_rpc_types_debug::ExecutionWitness,
+        block_witness: alloy_rpc_types_debug::ExecutionWitness,
         block_header: Header,
         withdrawals: Vec<u8>,
-        witness_output_file: Option<PathBuf>,
+        oracle_witness_output_file: Option<PathBuf>,
         app: Option<String>,
     ) -> ForwardRunningResultKeeper<NoopTxCallback, PectraForkHeader> {
-        let (result_keeper, witness) = self.run_eth_block_with_options::<PROOF_ENV>(
+        let (result_keeper, _oracle_witness) = self.run_eth_block_with_options::<PROOF_ENV>(
             transactions,
-            witness,
+            block_witness,
             block_header,
             withdrawals,
-            witness_output_file,
+            oracle_witness_output_file,
             app,
             true,
             true,
@@ -760,13 +760,13 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
     pub fn run_eth_block_with_options<const PROOF_ENV: bool>(
         &mut self,
         transactions: Vec<Vec<u8>>,
-        witness: alloy_rpc_types_debug::ExecutionWitness,
+        block_witness: alloy_rpc_types_debug::ExecutionWitness,
         block_header: Header,
         withdrawals: Vec<u8>,
-        witness_output_file: Option<PathBuf>,
+        oracle_witness_output_file: Option<PathBuf>,
         app: Option<String>,
         compute_result_keeper: bool,
-        compute_witness: bool,
+        compute_oracle_witness: bool,
     ) -> (
         Option<ForwardRunningResultKeeper<NoopTxCallback, PectraForkHeader>>,
         Option<Vec<u32>>,
@@ -774,7 +774,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
         use crypto::MiniDigest;
         use std::collections::BTreeMap;
 
-        let mut headers: Vec<Header> = witness
+        let mut headers: Vec<Header> = block_witness
             .headers
             .iter()
             .map(|el| {
@@ -786,12 +786,12 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
         assert!(headers.len() > 0);
         assert!(headers.is_sorted_by(|a, b| a.number < b.number));
         headers.reverse();
-        assert_eq!(headers.len(), witness.headers.len());
+        assert_eq!(headers.len(), block_witness.headers.len());
 
         let block_number = headers[0].number + 1;
 
         let mut headers_encodings: Vec<_> =
-            witness.headers.iter().map(|el| el.0.to_vec()).collect();
+            block_witness.headers.iter().map(|el| el.0.to_vec()).collect();
         headers_encodings.reverse();
 
         let initial_root = headers[0].state_root;
@@ -800,7 +800,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
         let mut oracle: BTreeMap<Bytes32, Vec<u8>> = BTreeMap::new();
 
         // make an oracle
-        for el in witness.state.iter() {
+        for el in block_witness.state.iter() {
             let hash = crypto::sha3::Keccak256::digest(el);
             oracle.insert(Bytes32::from_array(hash), el.to_vec());
             preimage_source
@@ -808,7 +808,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
                 .insert(Bytes32::from_array(hash), el.to_vec());
         }
 
-        for el in witness.codes.iter() {
+        for el in block_witness.codes.iter() {
             let hash = crypto::sha3::Keccak256::digest(el);
             oracle.insert(Bytes32::from_array(hash), el.to_vec());
             preimage_source
@@ -826,7 +826,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
         let mut accounts_mpt: EthereumMPT<'_, Global, VecCtor> =
             EthereumMPT::new_in(initial_root.0, &mut interner, Global).unwrap();
         let mut account_properties = HashMap::<B160, EthereumAccountProperties>::new();
-        for el in witness.keys.iter() {
+        for el in block_witness.keys.iter() {
             if el.len() == 20 {
                 let hash = crypto::sha3::Keccak256::digest(el);
                 let digits = digits_from_key(&hash);
@@ -917,9 +917,9 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
                 result_keeper
             } else {
                 // should save witness
-                let mut file = File::create(&format!("witness_{}.bin", block_number))
+                let mut file = File::create(&format!("block_witness_{}.bin", block_number))
                     .expect("should create file");
-                bincode::serialize_into(&mut file, &witness).expect("must write witness to file");
+                bincode::serialize_into(&mut file, &block_witness).expect("must write block_witness to file");
                 panic!("Failed to run the STF");
             }
         } else {
@@ -937,7 +937,7 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
         // but it requires RLP encoding to compute the hash. We use the expected_block_hash
         // computed earlier from the target header encoding instead.
 
-        if witness_output_file.is_none() && !compute_witness {
+        if oracle_witness_output_file.is_none() && !compute_oracle_witness {
             return (Some(result_keeper), None);
         }
         // if let Some(path) = witness_output_file {
@@ -980,17 +980,17 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
         oracle.add_external_processor(callable_oracles::field_hints::FieldOpsQuery::default());
 
         #[cfg(feature = "zisk-witness")]
-        let result = {
+        let oracle_witness = {
             // Use ZisK emulator for 64-bit RISC-V execution
             let elf_path = get_zksync_os_sym_path(&app);
             let elf_path_str = elf_path.to_str().expect("ELF path must be valid UTF-8");
             info!("Running ZisK emulator with ELF: {}", elf_path_str);
             let now = std::time::Instant::now();
-            let (witness, proof_output) = Self::run_block_generate_witness_zisk(oracle, elf_path_str);
+            let (oracle_witness, proof_output) = Self::run_block_generate_witness_zisk(oracle, elf_path_str);
             info!(
-                "ZisK emulator executed over {:?}, {} witness elements",
+                "ZisK emulator executed over {:?}, {} oracle witness elements",
                 now.elapsed(),
-                witness.len()
+                oracle_witness.len()
             );
             // Ensure that proof running didn't fail: check that output is not zero
             assert!(proof_output.into_iter().any(|word| word != 0), "ZisK proof output is all zeros");
@@ -1014,12 +1014,12 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
                 );
             }
 
-            witness
+            oracle_witness
         };
 
         #[cfg(not(feature = "zisk-witness"))]
-        let result = {
-            let (witness, proof_output) = Self::run_batch_generate_witness::<false>(oracle, &app);
+        let oracle_witness = {
+            let (oracle_witness, proof_output) = Self::run_batch_generate_witness::<false>(oracle, &app);
 
             // Convert proof_output [u32; 8] to bytes for comparison
             let proof_output_bytes: [u8; 32] = unsafe { core::mem::transmute(proof_output) };
@@ -1040,18 +1040,18 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
                 );
             }
 
-            witness
+            oracle_witness
         };
 
-        if let Some(path) = witness_output_file {
+        if let Some(path) = oracle_witness_output_file {
             let mut file = File::create(&path).expect("should create file");
-            let witness: Vec<u8> = result.iter().flat_map(|x| x.to_be_bytes()).collect();
-            let hex = hex::encode(witness);
+            let oracle_witness_bytes: Vec<u8> = oracle_witness.iter().flat_map(|x| x.to_be_bytes()).collect();
+            let hex = hex::encode(oracle_witness_bytes);
             file.write_all(hex.as_bytes())
                 .expect("should write to file");
         }
 
-        (Some(result_keeper), Some(result))
+        (Some(result_keeper), Some(oracle_witness))
     }
 
     ///

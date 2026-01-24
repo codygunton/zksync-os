@@ -66,7 +66,7 @@ enum Command {
         /// positions to emulate real-world costs
         #[arg(long, action = clap::ArgAction::SetTrue)]
         randomized: bool,
-        /// If set, will run prover input generation and dump it
+        /// If set, will run prover input generation and dump oracle witness
         /// to the desired path.
         #[arg(long)]
         witness_output_dir: Option<String>,
@@ -76,14 +76,14 @@ enum Command {
         #[arg(long)]
         only_forward: bool,
     },
-    // Run a single Ethereum block with Keccak MPT witness
+    // Run a single Ethereum block with Keccak MPT block witness
     SingleEthRun {
-        /// Path to the block directory (requires witness.json)
+        /// Path to the block directory (requires block witness.json)
         #[arg(long)]
         block_dir: String,
         #[arg(long)]
         chain_id: Option<u64>,
-        /// Skip RISC-V witness generation (faster, bootloader only)
+        /// Skip RISC-V oracle witness generation (faster, bootloader only)
         #[arg(long)]
         skip_witness: bool,
     },
@@ -154,8 +154,8 @@ enum Command {
         worker_threads: Option<usize>,
     },
 
-    /// This command will run the witness generation for Ethereum STF.
-    /// It will fetch the block and execution witness from L1, and attempt to generate witness.
+    /// This command will run the oracle witness generation for Ethereum STF.
+    /// It will fetch the block and block witness from L1, and attempt to generate oracle witness.
     /// Can be useful for local debugging.
     EthStfWitGen {
         /// Path to the block JSON file

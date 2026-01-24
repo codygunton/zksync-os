@@ -134,7 +134,7 @@ impl MemorySource for ZiskMemorySource {
 
 /// Bridge between ZkEENonDeterminismSource and Zisk's oracle callback interface.
 ///
-/// This struct wraps the oracle and captures all reads into a witness vector.
+/// This struct wraps the oracle and captures all reads into an oracle_witness vector.
 /// It tracks protocol state to correctly convert between 32-bit and 64-bit:
 /// - Length indicator: returned as-is (single u32 zero-extended to u64)
 /// - Data: pairs of u32 combined into u64
@@ -146,7 +146,7 @@ pub struct ZiskOracleBridge {
     oracle: UnsafeCell<ZkEENonDeterminismSource>,
     /// Shared memory source used by the oracle. Must be set before each write.
     memory_source: Arc<ZiskMemorySource>,
-    witness: Arc<Mutex<Vec<u32>>>,
+    oracle_witness: Arc<Mutex<Vec<u32>>>,
     /// How many u32 values remain to read for current query response.
     /// 0 means next read is a length indicator.
     remaining_u32s: AtomicU32,
@@ -169,15 +169,15 @@ impl ZiskOracleBridge {
         Self {
             oracle: UnsafeCell::new(oracle),
             memory_source,
-            witness: Arc::new(Mutex::new(Vec::new())),
+            oracle_witness: Arc::new(Mutex::new(Vec::new())),
             remaining_u32s: AtomicU32::new(0),
             ignore_next_zero_write: AtomicU32::new(0),
         }
     }
 
-    /// Get a reference to the captured witness vector.
-    pub fn get_witness(&self) -> Arc<Mutex<Vec<u32>>> {
-        Arc::clone(&self.witness)
+    /// Get a reference to the captured oracle witness vector (CSR reads).
+    pub fn get_oracle_witness(&self) -> Arc<Mutex<Vec<u32>>> {
+        Arc::clone(&self.oracle_witness)
     }
 
     /// Read from the oracle and capture the value.
@@ -191,7 +191,7 @@ impl ZiskOracleBridge {
         let oracle = unsafe { &mut *self.oracle.get() };
         // Use the NonDeterminismCSRSource trait method
         let value = <ZkEENonDeterminismSource as NonDeterminismCSRSource<ZiskMemorySource>>::read(oracle);
-        self.witness.lock().expect("witness lock poisoned").push(value);
+        self.oracle_witness.lock().expect("oracle_witness lock poisoned").push(value);
         let count = ORACLE_OP_COUNT.fetch_add(1, Ordering::Relaxed);
         // Log every 100000 operations to track progress (suppressed by ZISK_QUIET=1)
         if count % 100000 == 0 && !is_quiet() {
@@ -375,9 +375,9 @@ mod tests {
         let oracle = ZkEENonDeterminismSource::default();
         let bridge = ZiskOracleBridge::new(oracle, memory_source);
 
-        let witness_ref = bridge.get_witness();
+        let oracle_witness_ref = bridge.get_oracle_witness();
 
-        // Check that witness starts empty
-        assert!(witness_ref.lock().unwrap().is_empty());
+        // Check that oracle_witness starts empty
+        assert!(oracle_witness_ref.lock().unwrap().is_empty());
     }
 }

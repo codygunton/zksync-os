@@ -32,7 +32,7 @@ fn eth_run(
     block_number: u64,
     transactions: Vec<Vec<u8>>,
     block_hashes: Vec<U256>,
-    witness: alloy_rpc_types_debug::ExecutionWitness,
+    block_witness: alloy_rpc_types_debug::ExecutionWitness,
     withdrawals_encoding: Vec<u8>,
     write_to_file: bool,
     app: Option<String>,
@@ -41,29 +41,29 @@ fn eth_run(
 
     chain.set_block_hashes(block_hashes.try_into().unwrap());
 
-    let witness_output_dir = if write_to_file {
+    let oracle_witness_output_dir = if write_to_file {
         let mut suffix = block_number.to_string();
         suffix.push_str("_witness");
         Some(std::path::PathBuf::from(&suffix))
     } else {
         None
     };
-    let (_result_keeper, witness) = chain.run_eth_block_with_options::<true>(
+    let (_result_keeper, oracle_witness) = chain.run_eth_block_with_options::<true>(
         transactions,
-        witness,
+        block_witness,
         header,
         withdrawals_encoding,
-        witness_output_dir,
+        oracle_witness_output_dir,
         app,
         true,
         true,
     );
 
-    Ok(witness.unwrap())
+    Ok(oracle_witness.unwrap())
 }
 
-/// Runs ethproofs to generate execution witness for a given block number.
-/// Returns the witness and the duration it took to generate it (without time spent on fetching data).
+/// Runs ethproofs to generate oracle witness for a given block number.
+/// Returns the oracle witness and the duration it took to generate it (without time spent on fetching data).
 pub fn ethproofs_run(
     block_number: u64,
     reth_endpoint: &str,
@@ -73,14 +73,14 @@ pub fn ethproofs_run(
     // Fetch data from RPC endpoints
     let block = rpc::get_block(reth_endpoint, block_number)
         .context(format!("Failed to fetch block for {block_number}"))?;
-    let witness = rpc::get_witness(reth_endpoint, block_number)
-        .context(format!("Failed to fetch witness for {block_number}"))?
+    let block_witness = rpc::get_witness(reth_endpoint, block_number)
+        .context(format!("Failed to fetch block witness for {block_number}"))?
         .result;
 
     // get current time
     let current_time = std::time::SystemTime::now();
 
-    let mut headers: Vec<Header> = witness
+    let mut headers: Vec<Header> = block_witness
         .headers
         .iter()
         .map(|el| alloy_rlp::decode_exact(&el[..]).expect("must decode headers from witness"))
@@ -112,13 +112,13 @@ pub fn ethproofs_run(
     let transactions = block.get_all_raw_transactions();
 
     let chain = Chain::empty(Some(ETH_CHAIN_ID));
-    let witness = eth_run(
+    let oracle_witness = eth_run(
         chain,
         header,
         block_number,
         transactions,
         block_hashes,
-        witness,
+        block_witness,
         withdrawals_encoding,
         write_to_file,
         app,
@@ -126,10 +126,10 @@ pub fn ethproofs_run(
     // compute time taken
     let duration = current_time.elapsed().unwrap();
     info!("Time taken: {:?}", duration);
-    Ok((witness, duration.as_secs_f64()))
+    Ok((oracle_witness, duration.as_secs_f64()))
 }
 
-/// Queries Reth node for block and witness structures
+/// Queries Reth node for block and block_witness structures
 pub fn ethproofs_get_proving_witness_from_rpc(
     block_number: u64,
     reth_endpoint: &str,
@@ -140,8 +140,8 @@ pub fn ethproofs_get_proving_witness_from_rpc(
     // Fetch data from RPC endpoints
     let block = rpc::get_block(reth_endpoint, block_number)
         .context(format!("Failed to fetch block for {block_number}"))?;
-    let witness = rpc::get_witness(reth_endpoint, block_number)
-        .context(format!("Failed to fetch witness for {block_number}"))?
+    let block_witness = rpc::get_witness(reth_endpoint, block_number)
+        .context(format!("Failed to fetch block witness for {block_number}"))?
         .result;
 
     info!("Fetched block: {block_number}");
@@ -151,7 +151,7 @@ pub fn ethproofs_get_proving_witness_from_rpc(
     let duration = current_time.elapsed().unwrap();
     info!("RPC time taken: {:?}", duration);
 
-    Ok((block, witness))
+    Ok((block, block_witness))
 }
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -190,9 +190,9 @@ struct Wrapper(Vec<u32>);
 pub fn ethproofs_fetch_witness(
     reth_endpoint: &str,
     block_number: u64,
-    witness_output_dir: &str,
+    oracle_witness_output_dir: &str,
 ) -> anyhow::Result<()> {
-    let (witness, duration) = ethproofs_run(
+    let (oracle_witness, duration) = ethproofs_run(
         block_number,
         reth_endpoint,
         true,
@@ -200,19 +200,19 @@ pub fn ethproofs_fetch_witness(
     )?;
 
     println!(
-        "Fetched witness for block {} in {}s, writing to {}/{}_witness.bincode",
-        block_number, duration, witness_output_dir, block_number
+        "Fetched oracle witness for block {} in {}s, writing to {}/{}_witness.bincode",
+        block_number, duration, oracle_witness_output_dir, block_number
     );
 
-    let wrapper = Wrapper(witness);
-    let serialized_witness = bincode::serde::encode_to_vec(&wrapper, bincode::config::standard())
-        .context("Failed to serialize the execution witness")?;
+    let wrapper = Wrapper(oracle_witness);
+    let serialized_oracle_witness = bincode::serde::encode_to_vec(&wrapper, bincode::config::standard())
+        .context("Failed to serialize the oracle witness")?;
 
-    std::fs::create_dir_all(witness_output_dir)
-        .context("Failed to create witness output directory")?;
-    let witness_path = format!("{}/{}_witness.bincode", witness_output_dir, block_number);
-    std::fs::write(&witness_path, &serialized_witness)
-        .context("Failed to write the serialized witness to file")?;
+    std::fs::create_dir_all(oracle_witness_output_dir)
+        .context("Failed to create oracle witness output directory")?;
+    let oracle_witness_path = format!("{}/{}_witness.bincode", oracle_witness_output_dir, block_number);
+    std::fs::write(&oracle_witness_path, &serialized_oracle_witness)
+        .context("Failed to write the serialized oracle witness to file")?;
 
     Ok(())
 }
@@ -358,7 +358,7 @@ pub fn ethproofs_with_proofs(
             head
         };
         if head > previous_head {
-            let (block, reth_witness) =
+            let (block, block_witness) =
                 match ethproofs_get_proving_witness_from_rpc(head, reth_endpoint) {
                     Ok(data) => data,
                     Err(error) => {
@@ -366,7 +366,7 @@ pub fn ethproofs_with_proofs(
                         continue;
                     }
                 };
-            block_sender.send((head, block, reth_witness))?;
+            block_sender.send((head, block, block_witness))?;
             previous_head = head;
         } else {
             sleep(POLL_INTERVAL);
