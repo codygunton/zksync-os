@@ -3,11 +3,10 @@ set -e
 
 # Build zksync-os for different machines
 #
-# Usage: ./build.sh --machine {airbender|qemu|zisk} [--clean] [--debug]
+# Usage: ./build.sh --machine {airbender|zisk} [--clean] [--debug]
 #
 # Machines:
 #   airbender - RV32IM for airbender zkVM (entry point 0x01000000)
-#   qemu      - RV64IM for QEMU debugging (RAM at 0x88000000)
 #   zisk      - RV64IM for Zisk zkVM (RAM at 0xa0000000)
 #
 # Options:
@@ -43,13 +42,13 @@ while [ "$#" -gt 0 ]; do
             shift
             ;;
         # Backwards compatibility: positional arg for machine
-        airbender | qemu | zisk)
+        airbender | zisk)
             MACHINE="$1"
             shift
             ;;
         *)
             echo "Unknown argument: $1"
-            echo "Usage: $0 --machine {airbender|qemu|zisk} [--clean] [--debug]"
+            echo "Usage: $0 --machine {airbender|zisk} [--clean] [--debug]"
             exit 2
             ;;
     esac
@@ -58,33 +57,27 @@ done
 # Default machine
 [ -n "$MACHINE" ] || {
     echo "Missing --machine argument"
-    echo "Usage: $0 --machine {airbender|qemu|zisk} [--clean]"
+    echo "Usage: $0 --machine {airbender|zisk} [--clean]"
     exit 2
 }
 
 # Configure machine-specific settings
 case "$MACHINE" in
     airbender)
-        # RV32IM for airbender zkVM (1022M RAM available)
+        # RV32IM for airbender zkVM (1020M RAM available)
+        # Uses linker scripts from riscv_common submodule
         TARGET="riscv32i-unknown-none-elf"
-        MEMORY_LAYOUT="memory-airbender.x"
+        LDS_DIR="zksync-airbender/riscv_common/src/lds"
+        MEMORY_LAYOUT="memory.x"
         LINK_SCRIPT="link.x"
         TARGET_FEATURES="+m,-unaligned-scalar-mem,+relax"
         BUILD_STD_FLAGS=""
         echo "=== Building for AIRBENDER (RV32IM, entry 0x01000000) ==="
         ;;
-    qemu)
-        # RV64IMAC for QEMU debugging (512M RAM available)
-        TARGET="riscv64imac-unknown-none-elf"
-        MEMORY_LAYOUT="memory-qemu.x"
-        LINK_SCRIPT="link-512m.x"
-        TARGET_FEATURES="+m,+a,+c,-unaligned-scalar-mem,+relax"
-        BUILD_STD_FLAGS=""
-        echo "=== Building for QEMU (RV64IMAC, RAM at 0x88000000) ==="
-        ;;
     zisk)
         # RV64IMAC for Zisk zkVM (512M RAM available)
         TARGET="riscv64imac-unknown-none-elf"
+        LDS_DIR="src/lds"
         if $DEBUG; then
             MEMORY_LAYOUT="memory-zisk-debug.x"
             echo "=== Building for ZISK DEBUG (RV64IMAC, low addresses for debug info) ==="
@@ -98,7 +91,7 @@ case "$MACHINE" in
         ;;
     *)
         echo "Invalid --machine: $MACHINE"
-        echo "Valid options: airbender, qemu, zisk"
+        echo "Valid options: airbender, zisk"
         exit 1
         ;;
 esac
@@ -117,7 +110,7 @@ BIN_NAME="zksync_os_${SUFFIX}.bin"
 ELF_NAME="zksync_os_${SUFFIX}.elf"
 TEXT_NAME="zksync_os_${SUFFIX}.text"
 
-echo "Memory layout: src/lds/$MEMORY_LAYOUT"
+echo "Memory layout: $LDS_DIR/$MEMORY_LAYOUT"
 echo "Features: $FEATURES"
 echo "Target: $TARGET"
 if $DEBUG; then
@@ -126,8 +119,8 @@ fi
 echo ""
 
 # Verify memory script exists
-if [[ ! -f "src/lds/$MEMORY_LAYOUT" ]]; then
-    echo "Error: Memory script not found: src/lds/$MEMORY_LAYOUT"
+if [[ ! -f "$LDS_DIR/$MEMORY_LAYOUT" ]]; then
+    echo "Error: Memory script not found: $LDS_DIR/$MEMORY_LAYOUT"
     exit 1
 fi
 
@@ -142,7 +135,7 @@ fi
 # Testing: disable memcpy/memmove idiom recognition
 export RUSTFLAGS="-Awarnings \
   -C target-feature=$TARGET_FEATURES \
-  -C link-arg=-Lsrc/lds \
+  -C link-arg=-L$LDS_DIR \
   -C link-arg=-T$MEMORY_LAYOUT \
   -C link-arg=-T$LINK_SCRIPT \
   -C link-arg=--save-temps \
