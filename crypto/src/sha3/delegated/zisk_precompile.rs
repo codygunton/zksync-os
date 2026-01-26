@@ -1,7 +1,10 @@
 //! ZisK Keccak-f1600 precompile implementation.
 //!
 //! Routes Keccak-f permutations to ZisK's native syscall (CSR 0x800).
-//! This is more efficient than software computation and proving-friendly.
+//! When the guest writes the address of a 200-byte Keccak state buffer to CSR 0x800,
+//! ZisK's execution environment performs the Keccak-f1600 permutation in the host
+//! and updates the state in-place. This generates a native ZisK Keccak proof table
+//! entry, making it proving-friendly compared to software computation.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 

@@ -691,8 +691,11 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
         let mut target_header_encoding = vec![];
         block_header.encode(&mut target_header_encoding);
 
-        // Compute the expected block header hash for verification
-        let expected_block_hash: [u8; 32] = crypto::sha3::Keccak256::digest(&target_header_encoding);
+        // Compute the expected block header hash. This will be compared against the proof output
+        // from ZK execution to verify the block was processed correctly - the prover commits to
+        // this hash as the public output.
+        let expected_block_hash: [u8; 32] =
+            crypto::sha3::Keccak256::digest(&target_header_encoding);
         info!(
             "Expected block hash: 0x{}",
             expected_block_hash.iter().map(|b| format!("{:02x}", b)).collect::<String>()
@@ -851,8 +854,11 @@ impl<const RANDOMIZED_TREE: bool> Chain<RANDOMIZED_TREE> {
         let mut target_header_encoding = vec![];
         block_header.encode(&mut target_header_encoding);
 
-        // Compute the expected block header hash for verification
-        let expected_block_hash: [u8; 32] = crypto::sha3::Keccak256::digest(&target_header_encoding);
+        // Compute the expected block header hash. This will be compared against the proof output
+        // from ZK execution to verify the block was processed correctly - the prover commits to
+        // this hash as the public output.
+        let expected_block_hash: [u8; 32] =
+            crypto::sha3::Keccak256::digest(&target_header_encoding);
         info!(
             "Expected block hash: 0x{}",
             expected_block_hash.iter().map(|b| format!("{:02x}", b)).collect::<String>()
