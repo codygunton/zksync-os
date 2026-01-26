@@ -83,17 +83,6 @@ impl MontConfig<4> for FrConfig {
         unsafe {
             u256::mul_assign_montgomery::<FrParams>(&mut a.0, &BigInt::one());
         }
-
-        // WORKAROUND: Force memory reads after CSR delegation
-        // The bigint CSR delegation has memory ordering issues where writes
-        // may not be immediately visible. We force reads of all limbs and
-        // use them in a way that the optimizer cannot eliminate.
-        let checksum = a.0.0[0]
-            .wrapping_add(a.0.0[1])
-            .wrapping_add(a.0.0[2])
-            .wrapping_add(a.0.0[3]);
-        core::hint::black_box(checksum);
-
         a.0
     }
 
@@ -102,13 +91,6 @@ impl MontConfig<4> for FrConfig {
         unsafe {
             u256::add_mod_assign::<FrParams>(&mut a.0, &b.0);
         }
-
-        // WORKAROUND: Force memory reads after CSR delegation
-        let checksum = a.0.0[0]
-            .wrapping_add(a.0.0[1])
-            .wrapping_add(a.0.0[2])
-            .wrapping_add(a.0.0[3]);
-        core::hint::black_box(checksum);
     }
 
     #[inline(always)]
@@ -116,13 +98,6 @@ impl MontConfig<4> for FrConfig {
         unsafe {
             u256::sub_mod_assign::<FrParams>(&mut a.0, &b.0);
         }
-
-        // WORKAROUND: Force memory reads after CSR delegation
-        let checksum = a.0.0[0]
-            .wrapping_add(a.0.0[1])
-            .wrapping_add(a.0.0[2])
-            .wrapping_add(a.0.0[3]);
-        core::hint::black_box(checksum);
     }
 
     #[inline(always)]
@@ -130,13 +105,6 @@ impl MontConfig<4> for FrConfig {
         unsafe {
             u256::double_mod_assign::<FrParams>(&mut a.0);
         }
-
-        // WORKAROUND: Force memory reads after CSR delegation
-        let checksum = a.0.0[0]
-            .wrapping_add(a.0.0[1])
-            .wrapping_add(a.0.0[2])
-            .wrapping_add(a.0.0[3]);
-        core::hint::black_box(checksum);
     }
 
     #[inline(always)]
@@ -144,13 +112,6 @@ impl MontConfig<4> for FrConfig {
         unsafe {
             u256::neg_mod_assign::<FrParams>(&mut a.0);
         }
-
-        // WORKAROUND: Force memory reads after CSR delegation
-        let checksum = a.0.0[0]
-            .wrapping_add(a.0.0[1])
-            .wrapping_add(a.0.0[2])
-            .wrapping_add(a.0.0[3]);
-        core::hint::black_box(checksum);
     }
 
     #[inline(always)]
@@ -158,16 +119,6 @@ impl MontConfig<4> for FrConfig {
         unsafe {
             u256::mul_assign_montgomery::<FrParams>(&mut a.0, &b.0);
         }
-
-        // WORKAROUND: Force memory reads after CSR delegation
-        // The bigint CSR delegation has memory ordering issues where writes
-        // may not be immediately visible. We force reads of all limbs and
-        // use them in a way that the optimizer cannot eliminate.
-        let checksum = a.0.0[0]
-            .wrapping_add(a.0.0[1])
-            .wrapping_add(a.0.0[2])
-            .wrapping_add(a.0.0[3]);
-        core::hint::black_box(checksum);
     }
 
     #[inline(always)]
@@ -175,16 +126,6 @@ impl MontConfig<4> for FrConfig {
         unsafe {
             u256::square_assign_montgomery::<FrParams>(&mut a.0);
         }
-
-        // WORKAROUND: Force memory reads after CSR delegation
-        // The bigint CSR delegation has memory ordering issues where writes
-        // may not be immediately visible. We force reads of all limbs and
-        // use them in a way that the optimizer cannot eliminate.
-        let checksum = a.0.0[0]
-            .wrapping_add(a.0.0[1])
-            .wrapping_add(a.0.0[2])
-            .wrapping_add(a.0.0[3]);
-        core::hint::black_box(checksum);
     }
 
     fn inverse(a: &Fr) -> Option<Fr> {

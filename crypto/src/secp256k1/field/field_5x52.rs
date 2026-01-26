@@ -498,7 +498,11 @@ impl FieldElement5x52 {
 
     #[inline(always)]
     pub(crate) fn invert_in_place(&mut self) {
-        *self = self.normalize().to_signed62().modinv64(&MOD_INFO).to_field_elem();
+        *self = self
+            .normalize()
+            .to_signed62()
+            .modinv64(&MOD_INFO)
+            .to_field_elem();
     }
 
     #[inline(always)]

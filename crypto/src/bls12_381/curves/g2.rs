@@ -138,10 +138,9 @@ impl SWCurveConfig for Config {
             read_g2_uncompressed(&mut reader)?
         };
 
-        if validate == ark_serialize::Validate::Yes {
-            if !p.is_zero() && !p.is_in_correct_subgroup_assuming_on_curve() {
-                return Err(ark_serialize::SerializationError::InvalidData);
-            }
+        if validate == ark_serialize::Validate::Yes && !p.is_in_correct_subgroup_assuming_on_curve()
+        {
+            return Err(SerializationError::InvalidData);
         }
         Ok(p)
     }

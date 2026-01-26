@@ -309,12 +309,9 @@ impl<const N: usize> BigInteger for BigInt<N> {
                     core::mem::transmute(&mut self.0),
                     core::mem::transmute(&other.0),
                 );
-                // Get references to high 4 limbs (index 4..8)
-                let self_high: &mut [u64; 4] = &mut *(self.0.as_mut_ptr().add(4) as *mut [u64; 4]);
-                let other_high: &[u64; 4] = &*(other.0.as_ptr().add(4) as *const [u64; 4]);
                 crate::bigint_delegation::u256::add_with_carry_bit(
-                    core::mem::transmute(self_high),
-                    core::mem::transmute(other_high),
+                    core::mem::transmute(self.0.get_unchecked_mut(4)),
+                    core::mem::transmute(other.0.get_unchecked(4)),
                     low_carry,
                 )
             }
@@ -338,12 +335,9 @@ impl<const N: usize> BigInteger for BigInt<N> {
                     core::mem::transmute(&mut self.0),
                     core::mem::transmute(&other.0),
                 );
-                // Get references to high 4 limbs (index 4..8)
-                let self_high: &mut [u64; 4] = &mut *(self.0.as_mut_ptr().add(4) as *mut [u64; 4]);
-                let other_high: &[u64; 4] = &*(other.0.as_ptr().add(4) as *const [u64; 4]);
                 crate::bigint_delegation::u256::sub_with_carry_bit(
-                    core::mem::transmute(self_high),
-                    core::mem::transmute(other_high),
+                    core::mem::transmute(self.0.get_unchecked_mut(4)),
+                    core::mem::transmute(other.0.get_unchecked(4)),
                     low_borrow,
                 )
             }

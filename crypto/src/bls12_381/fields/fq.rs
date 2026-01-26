@@ -89,19 +89,6 @@ impl MontConfig<NUM_LIMBS> for FqConfig {
         unsafe {
             u512::mul_assign_montgomery::<FqParams>(&mut a.0, &BigInt::one());
         }
-
-        // WORKAROUND: Force memory reads after CSR delegation
-        // The bigint CSR delegation has memory ordering issues where writes
-        // may not be immediately visible. We force reads of all limbs and
-        // use them in a way that the optimizer cannot eliminate.
-        let checksum = a.0.0[0]
-            .wrapping_add(a.0.0[1])
-            .wrapping_add(a.0.0[2])
-            .wrapping_add(a.0.0[3])
-            .wrapping_add(a.0.0[4])
-            .wrapping_add(a.0.0[5]);
-        core::hint::black_box(checksum);
-
         a.0
     }
 
@@ -145,30 +132,12 @@ impl MontConfig<NUM_LIMBS> for FqConfig {
         unsafe {
             u512::add_mod_assign::<FqParams>(&mut a.0, &b.0);
         }
-
-        // WORKAROUND: Force memory reads after CSR delegation
-        let checksum = a.0.0[0]
-            .wrapping_add(a.0.0[1])
-            .wrapping_add(a.0.0[2])
-            .wrapping_add(a.0.0[3])
-            .wrapping_add(a.0.0[4])
-            .wrapping_add(a.0.0[5]);
-        core::hint::black_box(checksum);
     }
     #[inline(always)]
     fn sub_assign(a: &mut F, b: &F) {
         unsafe {
             u512::sub_mod_assign::<FqParams>(&mut a.0, &b.0);
         }
-
-        // WORKAROUND: Force memory reads after CSR delegation
-        let checksum = a.0.0[0]
-            .wrapping_add(a.0.0[1])
-            .wrapping_add(a.0.0[2])
-            .wrapping_add(a.0.0[3])
-            .wrapping_add(a.0.0[4])
-            .wrapping_add(a.0.0[5]);
-        core::hint::black_box(checksum);
     }
 
     #[inline(always)]
@@ -176,15 +145,6 @@ impl MontConfig<NUM_LIMBS> for FqConfig {
         unsafe {
             u512::double_mod_assign::<FqParams>(&mut a.0);
         }
-
-        // WORKAROUND: Force memory reads after CSR delegation
-        let checksum = a.0.0[0]
-            .wrapping_add(a.0.0[1])
-            .wrapping_add(a.0.0[2])
-            .wrapping_add(a.0.0[3])
-            .wrapping_add(a.0.0[4])
-            .wrapping_add(a.0.0[5]);
-        core::hint::black_box(checksum);
     }
     /// Sets `a = -a`.
     #[inline(always)]
@@ -192,15 +152,6 @@ impl MontConfig<NUM_LIMBS> for FqConfig {
         unsafe {
             u512::neg_mod_assign::<FqParams>(&mut a.0);
         }
-
-        // WORKAROUND: Force memory reads after CSR delegation
-        let checksum = a.0.0[0]
-            .wrapping_add(a.0.0[1])
-            .wrapping_add(a.0.0[2])
-            .wrapping_add(a.0.0[3])
-            .wrapping_add(a.0.0[4])
-            .wrapping_add(a.0.0[5]);
-        core::hint::black_box(checksum);
     }
 
     #[inline(always)]
@@ -208,18 +159,6 @@ impl MontConfig<NUM_LIMBS> for FqConfig {
         unsafe {
             u512::mul_assign_montgomery::<FqParams>(&mut a.0, &b.0);
         }
-
-        // WORKAROUND: Force memory reads after CSR delegation
-        // The bigint CSR delegation has memory ordering issues where writes
-        // may not be immediately visible. We force reads of all limbs and
-        // use them in a way that the optimizer cannot eliminate.
-        let checksum = a.0.0[0]
-            .wrapping_add(a.0.0[1])
-            .wrapping_add(a.0.0[2])
-            .wrapping_add(a.0.0[3])
-            .wrapping_add(a.0.0[4])
-            .wrapping_add(a.0.0[5]);
-        core::hint::black_box(checksum);
     }
 
     #[inline(always)]
@@ -227,18 +166,6 @@ impl MontConfig<NUM_LIMBS> for FqConfig {
         unsafe {
             u512::square_assign_montgomery::<FqParams>(&mut a.0);
         }
-
-        // WORKAROUND: Force memory reads after CSR delegation
-        // The bigint CSR delegation has memory ordering issues where writes
-        // may not be immediately visible. We force reads of all limbs and
-        // use them in a way that the optimizer cannot eliminate.
-        let checksum = a.0.0[0]
-            .wrapping_add(a.0.0[1])
-            .wrapping_add(a.0.0[2])
-            .wrapping_add(a.0.0[3])
-            .wrapping_add(a.0.0[4])
-            .wrapping_add(a.0.0[5]);
-        core::hint::black_box(checksum);
     }
 
     fn inverse(
