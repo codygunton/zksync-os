@@ -173,7 +173,6 @@ fn run_block(
         None,
         output_path,
         Some("evm_replay".to_string()),
-        false, // only_forward: run simulation for live runs
     );
 
     info!("Actual gas used: {}", output.header.gas_used);

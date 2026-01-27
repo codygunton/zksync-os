@@ -31,7 +31,6 @@ fn run<const RANDOMIZED: bool>(
     block_hashes: Option<BlockHashes>,
     witness_output_dir: Option<String>,
     withdrawals: &[Withdrawal],
-    only_forward: bool,
 ) -> anyhow::Result<()> {
     chain.set_last_block_number(block_number - 1);
 
@@ -59,7 +58,6 @@ fn run<const RANDOMIZED: bool>(
         None,
         output_path,
         Some(BIN_NAME.to_string()),
-        only_forward,
     );
 
     let _ratio = compute_ratio(stats);
@@ -193,7 +191,6 @@ pub fn single_run(
     randomized: bool,
     witness_output_dir: Option<String>,
     chain_id: Option<u64>,
-    only_forward: bool,
 ) -> anyhow::Result<()> {
     use std::path::Path;
     let dir = Path::new(&block_dir);
@@ -276,7 +273,6 @@ pub fn single_run(
             block_hashes,
             witness_output_dir,
             &withdrawals,
-            only_forward,
         )
     } else {
         let chain = Chain::empty(Some(1));
@@ -293,7 +289,6 @@ pub fn single_run(
             block_hashes,
             witness_output_dir,
             &withdrawals,
-            only_forward,
         )
     }
 }

@@ -72,9 +72,6 @@ enum Command {
         witness_output_dir: Option<String>,
         #[arg(long)]
         chain_id: Option<u64>,
-        /// Skip RISC-V simulation (faster, bootloader only)
-        #[arg(long)]
-        only_forward: bool,
     },
     // Run a single Ethereum block with Keccak MPT block witness
     SingleEthRun {
@@ -195,14 +192,12 @@ fn main() -> anyhow::Result<()> {
             randomized,
             witness_output_dir,
             chain_id,
-            only_forward,
         } => crate::single_run::single_run(
             block_dir,
             block_hashes,
             randomized,
             witness_output_dir,
             chain_id,
-            only_forward,
         ),
         Command::SingleEthRun {
             block_dir,
@@ -311,7 +306,7 @@ mod test {
 
     #[test]
     fn invoke_single_block() {
-        crate::single_run::single_run("blocks/19299001".to_string(), None, false, None, Some(1), false)
+        crate::single_run::single_run("blocks/19299001".to_string(), None, false, None, Some(1))
             .expect("must succeed");
     }
 
