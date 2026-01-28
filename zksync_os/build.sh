@@ -132,20 +132,13 @@ else
 fi
 
 # Construct RUSTFLAGS (overrides config.toml)
-# Testing: disable memcpy/memmove idiom recognition
 export RUSTFLAGS="-Awarnings \
   -C target-feature=$TARGET_FEATURES \
   -C link-arg=-L$LDS_DIR \
   -C link-arg=-T$MEMORY_LAYOUT \
   -C link-arg=-T$LINK_SCRIPT \
-  -C link-arg=--save-temps \
-  -C force-frame-pointers \
-  --remap-path-prefix=/=/src \
-  -C link-arg=--build-id=sha1 \
   -C codegen-units=1 \
-  -C debuginfo=$DEBUGINFO \
-  -C llvm-args=--disable-memcpy-idiom \
-  -C llvm-args=--disable-memmove-idiom"
+  -C debuginfo=$DEBUGINFO"
 
 # Clean if requested
 if $CLEAN; then
