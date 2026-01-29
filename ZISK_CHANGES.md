@@ -2,7 +2,7 @@
 
 Summary of changes in `zisk-integration` branch vs `forkbase` tag (commit ef2f9f944, "Fix clz opcode").
 
-**Stats:** 84 files changed, ~2100 insertions, ~500 deletions
+**Stats:** 82 files changed, ~1915 insertions, ~462 deletions
 
 ## Semantic Groupings
 
@@ -38,15 +38,18 @@ Summary of changes in `zisk-integration` branch vs `forkbase` tag (commit ef2f9f
 ### 3. Build System for Multi-Target
 
 **Files:**
-- `zksync_os/build.sh` - **New file**: Unified build script supporting airbender/qemu/zisk targets (209 lines)
+- `zksync_os/build.sh` - **New file**: Unified build script supporting airbender/qemu/zisk targets (195 lines)
+- `zksync_os/dump_bin.sh` - Simplified to 3 lines (functionality moved to build.sh)
 - `zksync_os/.cargo/config.toml` - Default to RV64 target (`riscv64im-unknown-none-elf.json`), add `build-std`
 - `zksync_os/src/lds/memory-zisk.x` - **New file**: ZisK memory layout (ROM at 0x80000000, RAM at 0xa0000000)
-- `zksync_os/src/lds/memory-airbender.x` - **New file**: Airbender memory layout (ROM at 0, RAM at 2M)
 - `zksync_os/src/lds/link-512m.x` - **New file**: 512MB linker script for 64-bit (16M stack, 440M heap)
+- `zksync_os/.gitignore` - Updated to ignore build artifacts (*.bin, *.elf, *.text, *.dump)
+
+**Note:** Airbender builds now use linker scripts from the zksync-airbender submodule.
 
 **Memory layouts:**
 - ZisK: ROM 0x80000000 (128M), RAM 0xa0000000 (512M)
-- Airbender: ROM 0x0 (2M), RAM 0x200000 (1022M)
+- Airbender: Uses submodule's linker scripts (ROM at 0x0, RAM at 0x200000)
 
 ### 4. 64-bit UART Support
 
@@ -56,7 +59,15 @@ Summary of changes in `zisk-integration` branch vs `forkbase` tag (commit ef2f9f
   - 64-bit (ZisK): Memory-mapped UART at 0xa0000200
 - `zksync_os/src/main.rs` - Minor adjustments for 64-bit compatibility
 
-### 5. ZisK Witness Generation Bridge
+### 5. 64-bit Oracle Protocol Adaptation
+
+**Files:**
+- `proof_running_system/src/io_oracle/mod.rs` - Adapts CSR-based oracle for 64-bit: splits u64 values into two u32 writes, combines two u32 reads into u64
+- `forward_system/src/run/query_processors/uart_print.rs` - Line-buffered output with `[GUEST]` prefix for cleaner debug logs
+
+**Purpose:** The oracle witness format remains u32-based for compatibility. On 64-bit targets, the io_oracle module automatically handles the conversion between the guest's usize (u64) values and the oracle's u32 protocol.
+
+### 6. ZisK Witness Generation Bridge
 
 **Files:**
 - `tests/rig/src/zisk_bridge.rs` - **New file** (383 lines): Bridge between `ZkEENonDeterminismSource` and ZisK's oracle callback
@@ -66,7 +77,7 @@ Summary of changes in `zisk-integration` branch vs `forkbase` tag (commit ef2f9f
 
 **Purpose:** Allows running ZisK emulator with zksync-os's oracle for 64-bit witness generation. Handles the protocol translation between 32-bit oracle responses and 64-bit guest reads.
 
-### 6. eth_runner Enhancements
+### 7. eth_runner Enhancements
 
 **Files:**
 - `tests/instances/eth_runner/src/main.rs` - Add `SingleEthRun` command with `--skip-witness` flag
@@ -78,25 +89,27 @@ Summary of changes in `zisk-integration` branch vs `forkbase` tag (commit ef2f9f
   - `cycle_marker` - Enables cycle marker output for Airbender simulator
   - Changed default features to `["evm_replay"]`
 
-### 7. Test Data
+### 8. Test Data
 
 **Files:**
 - `tests/instances/eth_runner/blocks/24198369/*` - New block data (account_diffs.json, blobs.json, block.json, block_hashes.json, calltrace.json, difftrace.json, prestatetrace.json, receipts.json, witness.json)
 
-### 8. Workspace and Dependency Configuration
+### 9. Workspace and Dependency Configuration
 
 **Files:**
 - `Cargo.toml` - Patch section points airbender crates to local `zksync_os/zksync-airbender/` paths
 - `zksync_os/Cargo.toml` - Add `zisk_keccak` feature, patch airbender crates
 - `proof_running_system/Cargo.toml` - Remove `lock_api` dependency, simplify `talc` features
+- `.gitignore` - Add `tests/instances/eth_runner/target` to ignores
+- `basic_bootloader/src/bootloader/transaction_flow/zk/mod.rs` - Add missing `alloc::format` import
 
-### 9. Submodule Configuration
+### 10. Submodule Configuration
 
 **Files:**
 - `.gitmodules` - Add inner `zksync_os/zksync-airbender` submodule
 - `zksync_os/zksync-airbender` - Submodule reference (fork with RV64 support)
 
-### 10. Binary Symlinks
+### 11. Binary Symlinks
 
 **Files:**
 - `zksync_os/app.bin` - Converted from large binary to symlink (18 bytes)
@@ -116,7 +129,7 @@ Many files have `#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]`.
 The bridge has extensive debug logging and state tracking (383 lines). Some of this could be simplified once the integration is stable.
 
 ### 4. Build Script Size
-`build.sh` is 209 lines. The machine-specific configurations could be extracted to separate config files.
+`build.sh` is 195 lines. The machine-specific configurations could be extracted to separate config files.
 
 ---
 
