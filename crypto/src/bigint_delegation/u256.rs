@@ -53,14 +53,14 @@ pub fn to_be_bytes(a: U256) -> [u8; 32] {
 
 #[inline(always)]
 pub fn copy(dst: &mut U256, src: &U256) {
-    #[cfg(all(target_arch = "riscv32", feature = "bigint_ops"))]
+    #[cfg(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"))]
     if (src as *const U256).addr() < delegation::ROM_BOUND {
         *dst = *src;
     } else {
         delegation::memcpy(dst, src);
     };
 
-    #[cfg(not(all(target_arch = "riscv32", feature = "bigint_ops")))]
+    #[cfg(not(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops")))]
     {
         *dst = *src;
     }

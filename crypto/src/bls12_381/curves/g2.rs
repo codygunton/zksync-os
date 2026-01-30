@@ -12,9 +12,15 @@ use ark_ec::{
 use ark_ff::{AdditiveGroup, Field, PrimeField, Zero};
 use ark_serialize::{Compress, SerializationError};
 
-#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+#[cfg(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    test
+))]
 use crate::ark_ff_delegation::{BigIntMacro as BigInt, MontFp};
-#[cfg(not(any(all(target_arch = "riscv32", feature = "bigint_ops"), test)))]
+#[cfg(not(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    test
+)))]
 use ark_ff::{BigInt, MontFp};
 
 use super::{

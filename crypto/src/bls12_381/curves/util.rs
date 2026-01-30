@@ -2,9 +2,15 @@ use ark_ec::{short_weierstrass::Affine, AffineRepr};
 use ark_ff::PrimeField;
 use ark_serialize::SerializationError;
 
-#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+#[cfg(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    test
+))]
 use crate::ark_ff_delegation::BigInt;
-#[cfg(not(any(all(target_arch = "riscv32", feature = "bigint_ops"), test)))]
+#[cfg(not(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    test
+)))]
 use ark_ff::BigInt;
 
 use crate::bls12_381::{
@@ -65,7 +71,10 @@ impl EncodingFlags {
     }
 }
 
-#[cfg(not(any(all(target_arch = "riscv32", feature = "bigint_ops"), test)))]
+#[cfg(not(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    test
+)))]
 pub(crate) fn deserialize_fq(bytes: [u8; 48]) -> Option<Fq> {
     let mut tmp = BigInt::new([0, 0, 0, 0, 0, 0]);
 
@@ -82,7 +91,10 @@ pub(crate) fn deserialize_fq(bytes: [u8; 48]) -> Option<Fq> {
     Fq::from_bigint(tmp)
 }
 
-#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+#[cfg(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    test
+))]
 pub(crate) fn deserialize_fq(bytes: [u8; 48]) -> Option<Fq> {
     let mut tmp = BigInt::new([0, 0, 0, 0, 0, 0, 0, 0]);
 

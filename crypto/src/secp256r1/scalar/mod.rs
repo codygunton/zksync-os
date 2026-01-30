@@ -1,13 +1,13 @@
-#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"), test))]
 mod scalar_delegation;
 
-#[cfg(not(all(target_arch = "riscv32", feature = "bigint_ops")))]
+#[cfg(not(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops")))]
 mod scalar64;
 
 use core::ops::{Mul, Neg};
 
 cfg_if::cfg_if! {
-    if #[cfg(all(target_arch = "riscv32", feature = "bigint_ops"))] {
+    if #[cfg(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"))] {
         pub(super) use scalar_delegation::Scalar;
     } else {
         pub(super) use scalar64::Scalar;
@@ -15,7 +15,7 @@ cfg_if::cfg_if! {
 
 }
 
-#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"), test))]
 pub(super) use scalar_delegation::init;
 
 use super::{wnaf::ToWnaf, Secp256r1Err};

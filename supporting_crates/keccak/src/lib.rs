@@ -179,8 +179,17 @@ impl Keccak256Buffer {
         core::hint::assert_unchecked(ALEN_BYTES - self.filled >= input.len());
 
         let (src, len) = (input.as_ptr(), input.len());
-        let dst = self.buffer.as_mut_ptr().cast::<u8>();
-        core::ptr::copy_nonoverlapping(src, dst, len);
+        // Write to buffer starting at the current filled position
+        let dst = self.buffer.as_mut_ptr().cast::<u8>().add(self.filled);
+        // Use volatile reads/writes to work around RV64 compiler optimization bugs
+        // that can incorrectly eliminate memory operations
+        // See ai_plans/riscv-compiler-bugs.md for details
+        let mut i = 0;
+        while i < len {
+            let byte = core::ptr::read_volatile(src.add(i));
+            core::ptr::write_volatile(dst.add(i), byte);
+            i += 1;
+        }
         self.filled += len;
     }
 
@@ -226,7 +235,9 @@ impl Keccak256 {
 
         let mut word = 0;
         while word < ALEN {
-            self.state.words[word] ^= self.buffer.buffer[word];
+            // Use volatile read to work around RV64 compiler optimization bugs
+            let buf_word = unsafe { core::ptr::read_volatile(&self.buffer.buffer[word]) };
+            self.state.words[word] ^= buf_word;
             word += 1;
         }
         self.buffer.filled = 0;

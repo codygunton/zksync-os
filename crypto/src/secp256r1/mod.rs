@@ -21,7 +21,7 @@ pub(crate) const ECMULT_TABLE_SIZE_A: usize = 1 << (WINDOW_A - 2);
 pub(crate) const ECMULT_TABLE_SIZE_G: usize = 1 << (WINDOW_G - 2);
 pub(crate) const WNAF_BITS: usize = 256;
 
-#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"), test))]
 pub fn init() {
     field::init();
     scalar::init();

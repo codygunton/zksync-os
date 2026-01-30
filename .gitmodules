@@ -4,3 +4,7 @@
 [submodule "tests/evm_tester/ethereum-tests"]
 	path = tests/evm_tester/ethereum-tests
 	url = https://github.com/ethereum/tests
+[submodule "zksync_os/zksync-airbender"]
+	path = zksync_os/zksync-airbender
+	url = https://github.com/codygunton/zksync-airbender.git
+	branch = zisk-squash

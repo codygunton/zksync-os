@@ -1,10 +1,10 @@
-#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"), test))]
 use crate::ark_ff_delegation::MontFp;
 use ark_ec::{
     bn,
     bn::{BnConfig, TwistType},
 };
-#[cfg(not(any(all(target_arch = "riscv32", feature = "bigint_ops"), test)))]
+#[cfg(not(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"), test)))]
 use ark_ff::MontFp;
 
 use crate::bn254::fields::{Fq, Fq12Config, Fq2, Fq2Config, Fq6Config};

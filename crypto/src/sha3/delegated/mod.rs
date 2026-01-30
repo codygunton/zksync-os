@@ -1,19 +1,34 @@
 #[cfg(not(target_endian = "little"))]
 compile_error!("invalid arch - only intended for LE machines");
 
+// RV32 precompile for Airbender (uses CSR 0x7CB)
 #[cfg(all(target_arch = "riscv32", feature = "keccak_special5"))]
 mod precompile;
 #[cfg(all(target_arch = "riscv32", feature = "keccak_special5"))]
 pub(crate) use self::precompile::keccak_f1600;
 
-#[cfg(any(
-    not(all(target_arch = "riscv32", feature = "keccak_special5")),
-    feature = "testing",
+// ZisK precompile for RV64 targets (uses CSR 0x800)
+#[cfg(all(target_arch = "riscv64", feature = "zisk_keccak"))]
+mod zisk_precompile;
+#[cfg(all(target_arch = "riscv64", feature = "zisk_keccak"))]
+pub(crate) use self::zisk_precompile::keccak_f1600;
+
+// Software implementation: used when no hardware delegation available
+// Excludes: RV32 with keccak_special5, RV64 with zisk_keccak
+#[cfg(all(
+    any(
+        not(all(target_arch = "riscv32", feature = "keccak_special5")),
+        feature = "testing",
+    ),
+    not(all(target_arch = "riscv64", feature = "zisk_keccak"))
 ))]
 mod precompile_logic_simulator;
-#[cfg(any(
-    not(all(target_arch = "riscv32", feature = "keccak_special5")),
-    feature = "testing",
+#[cfg(all(
+    any(
+        not(all(target_arch = "riscv32", feature = "keccak_special5")),
+        feature = "testing",
+    ),
+    not(all(target_arch = "riscv64", feature = "zisk_keccak"))
 ))]
 pub(crate) use self::precompile_logic_simulator::keccak_f1600;
 

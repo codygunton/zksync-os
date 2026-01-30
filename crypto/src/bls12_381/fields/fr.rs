@@ -1,4 +1,4 @@
-#[cfg(all(target_arch = "riscv32", not(feature = "bigint_ops")))]
+#[cfg(all(any(target_arch = "riscv32", target_arch = "riscv64"), not(feature = "bigint_ops")))]
 compile_error!("feature `bigint_ops` must be activated for RISC-V target");
 
 use core::mem::MaybeUninit;
@@ -7,7 +7,7 @@ use crate::ark_ff_delegation::{BigInt, BigIntMacro, Fp, Fp256, MontBackend, Mont
 use crate::bigint_delegation::{u256, DelegatedModParams, DelegatedMontParams};
 use ark_ff::{AdditiveGroup, Zero};
 
-#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+#[cfg(any(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"), test))]
 pub fn init() {
     unsafe {
         MODULUS.as_mut_ptr().write(FrConfig::MODULUS);

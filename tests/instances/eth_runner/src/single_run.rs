@@ -87,11 +87,12 @@ fn eth_run<const PROOF_ENV: bool>(
     diff_trace: DiffTrace,
     calltrace: CallTrace,
     block_hashes: Vec<U256>,
-    witness: alloy_rpc_types_debug::ExecutionWitness,
+    block_witness: alloy_rpc_types_debug::ExecutionWitness,
     withdrawals: &[Withdrawal],
     withdrawals_encoding: Vec<u8>,
     account_diffs: Vec<AccountStateDiffs>,
     blobs: Vec<BlobTransactionSidecarItem>,
+    skip_oracle_witness: bool,
 ) -> anyhow::Result<()> {
     chain.set_last_block_number(block_number - 1);
 
@@ -99,20 +100,25 @@ fn eth_run<const PROOF_ENV: bool>(
 
     let prestate_cache = populate_prestate(&mut chain, ps_trace, &calltrace);
 
-    let witness_output_dir = {
+    let oracle_witness_output_dir = if skip_oracle_witness {
+        None
+    } else {
         let mut suffix = block_number.to_string();
         suffix.push_str("_witness");
-        std::path::PathBuf::from(&suffix)
+        Some(std::path::PathBuf::from(&suffix))
     };
 
-    let mut result_keeper = chain.run_eth_block::<PROOF_ENV>(
+    let (result_keeper_opt, _) = chain.run_eth_block_with_options::<PROOF_ENV>(
         transactions,
-        witness,
+        block_witness,
         header,
         withdrawals_encoding,
-        Some(witness_output_dir),
+        oracle_witness_output_dir,
         None,
+        true,                 // compute_result_keeper
+        !skip_oracle_witness, // compute_oracle_witness
     );
+    let mut result_keeper = result_keeper_opt.expect("result_keeper should be computed");
 
     if PROOF_ENV {
         for el in account_diffs.into_iter() {
@@ -301,22 +307,22 @@ pub fn read_eth_run_oracle(
     use std::path::Path;
     let dir = Path::new(&block_dir);
     let block = fs::read_to_string(dir.join("block.json"))?;
-    let witness = fs::File::open(dir.join("witness.json"))?;
+    let block_witness_file = fs::File::open(dir.join("witness.json"))?;
 
     let rpc_result: JsonResponse<alloy_rpc_types_debug::ExecutionWitness> =
-        serde_json::from_reader(witness)?;
-    let witness = rpc_result.result;
+        serde_json::from_reader(block_witness_file)?;
+    let block_witness = rpc_result.result;
 
     let block: Block = serde_json::from_str(&block)?;
 
-    let oracle = create_eth_run_oracle(block, witness);
+    let oracle = create_eth_run_oracle(block, block_witness);
 
     Ok(oracle)
 }
 
 pub fn create_eth_run_oracle(
     block: Block,
-    witness: alloy_rpc_types_debug::ExecutionWitness,
+    block_witness: alloy_rpc_types_debug::ExecutionWitness,
 ) -> rig::chain::ZkEENonDeterminismSource {
     let block_number = block.result.header.number;
     info!("Running block: {block_number}");
@@ -334,12 +340,13 @@ pub fn create_eth_run_oracle(
     };
     let transactions = block.get_all_raw_transactions();
 
-    Chain::<false>::make_eth_block_oracle(transactions, witness, block_header, withdrawals_encoding)
+    Chain::<false>::make_eth_block_oracle(transactions, block_witness, block_header, withdrawals_encoding)
 }
 
 pub fn single_eth_run<const PROOF_ENV: bool>(
     block_dir: String,
     chain_id: Option<u64>,
+    skip_oracle_witness: bool,
 ) -> anyhow::Result<()> {
     use crate::live_run::rpc::JsonResponse;
     use alloy_primitives::U256;
@@ -347,7 +354,7 @@ pub fn single_eth_run<const PROOF_ENV: bool>(
     use std::path::Path;
     let dir = Path::new(&block_dir);
     let block = fs::read_to_string(dir.join("block.json"))?;
-    let witness = fs::File::open(dir.join("witness.json"))?;
+    let block_witness_file = fs::File::open(dir.join("witness.json"))?;
     // TODO: ensure there are no calls to unsupported precompiles
     let calltrace_file = File::open(dir.join("calltrace.json"))?;
     let calltrace_reader = BufReader::new(calltrace_file);
@@ -363,8 +370,8 @@ pub fn single_eth_run<const PROOF_ENV: bool>(
     let block_hashes: Vec<U256> = serde_json::from_reader(block_hashes)?;
 
     let rpc_result: JsonResponse<alloy_rpc_types_debug::ExecutionWitness> =
-        serde_json::from_reader(witness)?;
-    let witness = rpc_result.result;
+        serde_json::from_reader(block_witness_file)?;
+    let block_witness = rpc_result.result;
 
     let calltrace: CallTrace = serde_json::from_reader(calltrace_reader)?;
     let block: Block = serde_json::from_str(&block).expect("valid block JSON");
@@ -461,10 +468,11 @@ pub fn single_eth_run<const PROOF_ENV: bool>(
         diff_trace,
         calltrace,
         block_hashes,
-        witness,
+        block_witness,
         &withdrawals,
         withdrawals_encoding,
         account_diffs,
         vec![],
+        skip_oracle_witness,
     )
 }

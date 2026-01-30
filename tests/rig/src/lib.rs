@@ -8,6 +8,9 @@ use std::sync::Once;
 pub mod chain;
 pub mod utils;
 
+#[cfg(feature = "zisk-witness")]
+pub mod zisk_bridge;
+
 pub use alloy;
 pub use alloy_rlp;
 pub use chain::BlockContext;

@@ -59,7 +59,7 @@ fn parse_integer(input: &[u8; SCALAR_SERIALIZATION_LEN]) -> <Fr as PrimeField>::
     for (dst, src) in repr.iter_mut().zip(input.as_rchunks::<8>().1.iter().rev()) {
         *dst = u64::from_be_bytes(*src);
     }
-    crypto::BigInt::new(repr)
+    <Fr as PrimeField>::BigInt::new(repr)
 }
 
 fn parse_fq(
@@ -78,7 +78,7 @@ fn parse_fq(
     {
         *dst = u64::from_be_bytes(*src);
     }
-    let repr = crypto::BigInt::new(repr);
+    let repr = <Fq as PrimeField>::BigInt::new(repr);
     if repr >= Fq::MODULUS {
         return Err(Bls12PrecompileSubsystemError::LeafUsage(interface_error!(
             Bls12PrecompileInterfaceError::InvalidFieldElement

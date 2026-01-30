@@ -54,7 +54,7 @@ enum Command {
         #[arg(long)]
         chain_id: Option<u64>,
     },
-    // Run a single block from JSON files
+    // Run a single block from JSON files (flat storage model with blake2s)
     SingleRun {
         /// Path to the block JSON file
         #[arg(long)]
@@ -66,12 +66,23 @@ enum Command {
         /// positions to emulate real-world costs
         #[arg(long, action = clap::ArgAction::SetTrue)]
         randomized: bool,
-        /// If set, will run prover input generation and dump it
+        /// If set, will run prover input generation and dump oracle witness
         /// to the desired path.
         #[arg(long)]
         witness_output_dir: Option<String>,
         #[arg(long)]
         chain_id: Option<u64>,
+    },
+    // Run a single Ethereum block with Keccak MPT block witness
+    SingleEthRun {
+        /// Path to the block directory (requires block witness.json)
+        #[arg(long)]
+        block_dir: String,
+        #[arg(long)]
+        chain_id: Option<u64>,
+        /// Skip RISC-V oracle witness generation (faster, bootloader only)
+        #[arg(long)]
+        skip_witness: bool,
     },
     // Export block ratios from DB
     ExportRatios {
@@ -140,8 +151,8 @@ enum Command {
         worker_threads: Option<usize>,
     },
 
-    /// This command will run the witness generation for Ethereum STF.
-    /// It will fetch the block and execution witness from L1, and attempt to generate witness.
+    /// This command will run the oracle witness generation for Ethereum STF.
+    /// It will fetch the block and block witness from L1, and attempt to generate oracle witness.
     /// Can be useful for local debugging.
     EthStfWitGen {
         /// Path to the block JSON file
@@ -188,6 +199,11 @@ fn main() -> anyhow::Result<()> {
             witness_output_dir,
             chain_id,
         ),
+        Command::SingleEthRun {
+            block_dir,
+            chain_id,
+            skip_witness,
+        } => crate::single_run::single_eth_run::<false>(block_dir, chain_id, skip_witness),
         Command::LiveRun {
             start_block,
             end_block,
@@ -316,7 +332,7 @@ mod test {
     #[test]
     fn invoke_single_eth_block() {
         let block_number = 23832885;
-        crate::single_run::single_eth_run::<true>(format!("blocks/{}", block_number), Some(1))
+        crate::single_run::single_eth_run::<true>(format!("blocks/{}", block_number), Some(1), false)
             .expect("must succeed");
     }
 

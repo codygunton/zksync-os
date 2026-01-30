@@ -1,18 +1,18 @@
 use super::u256::U256;
 use crate::BigIntOps;
 
-#[cfg(all(target_arch = "riscv32", feature = "bigint_ops"))]
+#[cfg(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"))]
 const CARRY_BIT_IDX: usize = 6;
 
-#[cfg(all(target_arch = "riscv32", feature = "bigint_ops"))]
+#[cfg(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"))]
 pub(super) const ROM_BOUND: usize = 1 << 21;
 
-#[cfg(all(target_arch = "riscv32", feature = "bigint_ops"))]
+#[cfg(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"))]
 static mut SCRATCH: core::mem::MaybeUninit<U256> = core::mem::MaybeUninit::uninit();
 
 #[inline(always)]
 pub(super) fn copy_if_needed(operand: &U256) -> &U256 {
-    #[cfg(all(target_arch = "riscv32", feature = "bigint_ops"))]
+    #[cfg(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"))]
     unsafe {
         let ptr = operand as *const U256;
         if ptr.addr() < ROM_BOUND {
@@ -23,7 +23,7 @@ pub(super) fn copy_if_needed(operand: &U256) -> &U256 {
         }
     }
 
-    #[cfg(not(all(target_arch = "riscv32", feature = "bigint_ops")))]
+    #[cfg(not(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops")))]
     {
         operand
     }
@@ -84,7 +84,7 @@ fn bigint_op_delegation(a: &mut U256, b: &U256, op: BigIntOps) -> u32 {
     bigint_op_delegation_with_carry_bit(a, b, false, op)
 }
 
-#[cfg(all(target_arch = "riscv32", feature = "bigint_ops"))]
+#[cfg(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"))]
 #[inline(always)]
 fn bigint_op_delegation_with_carry_bit(a: &mut U256, b: &U256, carry: bool, op: BigIntOps) -> u32 {
     let a = a as *mut U256;
@@ -92,7 +92,7 @@ fn bigint_op_delegation_with_carry_bit(a: &mut U256, b: &U256, carry: bool, op: 
     bigint_op_delegation_with_carry_bit_by_ptr(a, b, carry, op)
 }
 
-#[cfg(all(target_arch = "riscv32", feature = "bigint_ops"))]
+#[cfg(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"))]
 #[inline(always)]
 pub(crate) fn bigint_op_delegation_with_carry_bit_by_ptr(
     a: *mut U256,
@@ -112,7 +112,7 @@ pub(crate) fn bigint_op_delegation_with_carry_bit_by_ptr(
     unsafe { bigint_csr_trigger_delegation(a.cast(), b.cast(), mask) }
 }
 
-#[cfg(not(all(target_arch = "riscv32", feature = "bigint_ops")))]
+#[cfg(not(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops")))]
 #[inline(always)]
 fn bigint_op_delegation_with_carry_bit(a: &mut U256, b: &U256, carry: bool, op: BigIntOps) -> u32 {
     let a_ptr = a as *mut U256;
@@ -120,7 +120,7 @@ fn bigint_op_delegation_with_carry_bit(a: &mut U256, b: &U256, carry: bool, op: 
     bigint_op_delegation_with_carry_bit_by_ptr(a_ptr, b_ptr, carry, op)
 }
 
-#[cfg(not(all(target_arch = "riscv32", feature = "bigint_ops")))]
+#[cfg(not(all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops")))]
 #[inline(always)]
 pub(crate) fn bigint_op_delegation_with_carry_bit_by_ptr(
     _a_ptr: *mut U256,

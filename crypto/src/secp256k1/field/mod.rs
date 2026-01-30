@@ -2,19 +2,30 @@ use crate::k256::FieldBytes;
 use cfg_if::cfg_if;
 use core::ops::{AddAssign, MulAssign, SubAssign};
 
-#[cfg(any(target_arch = "riscv32", test))]
+// field_10x26: 32-bit implementation
+#[cfg(any(any(target_arch = "riscv32", target_arch = "riscv64"), test, all(feature = "proving", fuzzing)))]
 mod field_10x26;
-#[cfg(any(target_arch = "riscv32", test))]
+#[cfg(any(any(target_arch = "riscv32", target_arch = "riscv64"), test, all(feature = "proving", fuzzing)))]
 mod mod_inv32;
 
-#[cfg(any(target_pointer_width = "64", test))]
+// field_5x52: 64-bit implementation, used when not using delegation
+#[cfg(any(target_pointer_width = "64", test, all(feature = "proving", fuzzing)))]
 mod field_5x52;
-#[cfg(any(target_pointer_width = "64", test))]
+#[cfg(any(target_pointer_width = "64", test, all(feature = "proving", fuzzing)))]
 mod mod_inv64;
 
-#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+// field_8x32: CSR delegation implementation, used on riscv32/riscv64 with bigint_ops
+#[cfg(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    test,
+    all(feature = "proving", fuzzing)
+))]
 mod field_8x32;
-#[cfg(any(all(target_arch = "riscv32", feature = "bigint_ops"), test))]
+#[cfg(any(
+    all(any(target_arch = "riscv32", target_arch = "riscv64"), feature = "bigint_ops"),
+    test,
+    all(feature = "proving", fuzzing)
+))]
 pub use field_8x32::init;
 
 #[cfg(all(debug_assertions, not(feature = "bigint_ops")))]
@@ -23,9 +34,14 @@ mod field_impl;
 cfg_if! {
     if #[cfg(all(debug_assertions, not(feature = "bigint_ops")))] {
         use field_impl::{FieldElementImpl as FieldElementImplConst, FieldElementImpl, FieldStorageImpl};
-    } else if #[cfg(feature = "bigint_ops")] {
-        use field_10x26::{FieldElement10x26 as FieldElementImplConst, FieldStorage10x26 as FieldStorageImpl};
+    // Use bigint_ops delegation on riscv32/riscv64
+    } else if #[cfg(all(feature = "bigint_ops", any(target_arch = "riscv32", target_arch = "riscv64")))] {
         use field_8x32::FieldElement8x32 as FieldElementImpl;
+        // For const operations, use the native implementation
+        #[cfg(target_pointer_width = "32")]
+        use field_10x26::{FieldElement10x26 as FieldElementImplConst, FieldStorage10x26 as FieldStorageImpl};
+        #[cfg(target_pointer_width = "64")]
+        use field_5x52::{FieldElement5x52 as FieldElementImplConst, FieldStorage5x52 as FieldStorageImpl};
     } else if #[cfg(target_pointer_width = "64")] {
         use field_5x52::{FieldElement5x52 as FieldElementImpl, FieldElement5x52 as FieldElementImplConst, FieldStorage5x52 as FieldStorageImpl};
     } else if #[cfg(target_pointer_width = "32")] {
